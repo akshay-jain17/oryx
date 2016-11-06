@@ -22,6 +22,7 @@ import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.apache.commons.math3.distribution.IntegerDistribution;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -153,11 +154,17 @@ public abstract class OryxTest extends Assert {
     } else {
       assertNotNull(actual);
       assertEquals(expected.size(), actual.size());
-      assertTrue(actual + " had unexpected values not in " + expected,
-                 expected.containsAll(actual));
-      assertTrue(actual + " was missing values in " + expected,
-                 actual.containsAll(expected));
+      if (!expected.containsAll(actual)) {
+        fail("Found unexpected values " + minus(actual, expected));
+      }
+      if (!actual.containsAll(expected)) {
+        fail("Missing values " + minus(expected, actual));
+      }
     }
+  }
+
+  private static <T> Collection<T> minus(Collection<T> a, Collection<T> b) {
+    return a.stream().filter(t -> !b.contains(t)).collect(Collectors.toList());
   }
 
   public static void assertNonEmpty(Path p) throws IOException {
@@ -179,6 +186,22 @@ public abstract class OryxTest extends Assert {
         log.warn("Interrupted while sleeping; continuing");
       }
     }
+  }
+
+  /**
+   * Asserts that the probability of sampling a value as or more extreme than the given value,
+   * from the given discrete distribution, is at least 0.001.
+   *
+   * @param value sample value
+   * @param dist discrete distribution
+   */
+  public static void checkDiscreteProbability(int value, IntegerDistribution dist) {
+    double probAsExtreme = value <= dist.getNumericalMean() ?
+        dist.cumulativeProbability(value) :
+        (1.0 - dist.cumulativeProbability(value - 1));
+    assertTrue(value + " is not likely (" + probAsExtreme + " ) to differ from expected value " +
+               dist.getNumericalMean() + " by chance",
+               probAsExtreme >= 0.001);
   }
 
 }

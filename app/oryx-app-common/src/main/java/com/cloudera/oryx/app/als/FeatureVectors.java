@@ -16,51 +16,24 @@
 package com.cloudera.oryx.app.als;
 
 import java.util.Collection;
-import java.util.function.BiConsumer;
-
-import net.openhft.koloboke.collect.map.ObjObjMap;
-import net.openhft.koloboke.collect.map.hash.HashObjObjMaps;
-import net.openhft.koloboke.collect.set.ObjSet;
-import net.openhft.koloboke.collect.set.hash.HashObjSets;
-import org.apache.commons.math3.linear.RealMatrix;
-
-import com.cloudera.oryx.common.lang.AutoLock;
-import com.cloudera.oryx.common.lang.AutoReadWriteLock;
-import com.cloudera.oryx.common.math.VectorMath;
 
 /**
  * Encapsulates a feature vectors, keyed by an ID, and associated data structures.
  * This supports the representation of user-feature and item-feature vectors in {@code ALSServingModel}
  * or {@code ALSSpeedModel}.
  */
-public final class FeatureVectors {
-
-  private final ObjObjMap<String,float[]> vectors;
-  private final ObjSet<String> recentIDs;
-  private final AutoReadWriteLock lock;
-
-  public FeatureVectors() {
-    vectors = HashObjObjMaps.newMutableMap();
-    recentIDs = HashObjSets.newMutableSet();
-    lock = new AutoReadWriteLock();
-  }
+public interface FeatureVectors {
 
   /**
    * @return number of IDs / feature vectors
    */
-  public int size() {
-    return vectors.size();
-  }
+  int size();
 
   /**
    * @param id ID to get feature vector for
    * @return feature vector for ID, or {@code null} if doesn't exist
    */
-  public float[] getVector(String id) {
-    try (AutoLock al = lock.autoReadLock()) {
-      return vectors.get(id);
-    }
-  }
+  float[] getVector(String id);
 
   /**
    * Sets the value of a feature vector for an ID. If no feature vector previously existed,
@@ -69,57 +42,28 @@ public final class FeatureVectors {
    * @param id ID to set feature vector for
    * @param vector new feature vector
    */
-  public void setVector(String id, float[] vector) {
-    try (AutoLock al = lock.autoWriteLock()) {
-      if (vectors.put(id, vector) == null) {
-        // ID was actually new
-        recentIDs.add(id);
-      }
-    }
-  }
-
-  /**
-   * @param id ID to remove feature vector for
-   */
-  public void removeVector(String id) {
-    try (AutoLock al = lock.autoWriteLock()) {
-      vectors.remove(id);
-      recentIDs.remove(id);
-    }
-  }
+  void setVector(String id, float[] vector);
 
   /**
    * Adds all IDs that are mapped to a feature vector to a given collection
    *
    * @param allIDs collection to add IDs to
    */
-  public void addAllIDsTo(Collection<String> allIDs) {
-    try (AutoLock al = lock.autoReadLock()) {
-      allIDs.addAll(vectors.keySet());
-    }
-  }
+  void addAllIDsTo(Collection<String> allIDs);
 
   /**
    * Removes all IDs that are mapped to a feature vector from a given collection
    *
    * @param allIDs collection to add IDs to
    */
-  public void removeAllIDsFrom(Collection<String> allIDs) {
-    try (AutoLock al = lock.autoReadLock()) {
-      allIDs.removeAll(vectors.keySet());
-    }
-  }
+  void removeAllIDsFrom(Collection<String> allIDs);
 
   /**
    * Add all recently set IDs to the given collection
    *
    * @param allRecent collection to add IDs to
    */
-  public void addAllRecentTo(Collection<String> allRecent) {
-    try (AutoLock al = lock.autoReadLock()) {
-      allRecent.addAll(recentIDs);
-    }
-  }
+  void addAllRecentTo(Collection<String> allRecent);
 
   /**
    * Given IDs that are part of a new model, and whose values are going to be sent later,
@@ -128,34 +72,15 @@ public final class FeatureVectors {
    *
    * @param newModelIDs new model IDs
    */
-  public void retainRecentAndIDs(Collection<String> newModelIDs) {
-    try (AutoLock al = lock.autoWriteLock()) {
-      vectors.removeIf((key, value) -> !newModelIDs.contains(key) && !recentIDs.contains(key));
-      recentIDs.clear();
-    }
-  }
+  void retainRecentAndIDs(Collection<String> newModelIDs);
 
   /**
-   * @param action function to apply to every ID/vector pair
+   * @param background if true, a hint that this potentially expensive computation may be
+   *  deprioritized and need not use all available resources to compute
+   * @return considering the feature vectors as the rows of a matrix V, this computes V^T * V,
+   *  as a dense lower-triangular matrix, represented in BLAS 'packed' form, which is
+   *  column-major.
    */
-  public void forEach(BiConsumer<String,float[]> action) {
-    try (AutoLock al = lock.autoReadLock()) {
-      vectors.forEach(action);
-    }
-  }
-
-  /**
-   * @return considering the feature vectors as the rows of a matrix V, this computes V^T * V
-   */
-  public RealMatrix getVTV() {
-    try (AutoLock al = lock.autoReadLock()) {
-      return VectorMath.transposeTimesSelf(vectors.values());
-    }
-  }
-
-  @Override
-  public String toString() {
-    return "FeatureVectors[size:" + size() + "]";
-  }
+  double[] getVTV(boolean background);
 
 }

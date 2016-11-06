@@ -29,7 +29,7 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 
-import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
+import com.koloboke.function.ObjDoubleToDoubleFunction;
 
 import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
@@ -78,8 +78,7 @@ public final class Recommend extends AbstractALSResource {
       @DefaultValue("false") @QueryParam("considerKnownItems") boolean considerKnownItems,
       @QueryParam("rescorerParams") List<String> rescorerParams) throws OryxServingException {
 
-    check(howMany > 0, "howMany must be positive");
-    check(offset >= 0, "offset must be nonnegative");
+    int howManyOffset = checkHowManyOffset(howMany, offset);
 
     ALSServingModel model = getALSServingModel();
     float[] userVector = model.getUserVector(userID);
@@ -108,7 +107,7 @@ public final class Recommend extends AbstractALSResource {
     Stream<Pair<String,Double>> topIDDots = model.topN(
         new DotsFunction(userVector),
         rescoreFn,
-        howMany + offset,
+        howManyOffset,
         allowedFn);
     return toIDValueResponse(topIDDots, howMany, offset);
   }

@@ -99,20 +99,24 @@ function setVarFromProperty {
   eval $__resultvar=$result
 }
 
-# Helps execute kafka-foo or kafka-foo.sh as appropriate.
-# Kind of assume we're using all one or the other
-if [ -x "$(command -v kafka-topics)" ]; then
-  KAFKA_TOPICS_SH="kafka-topics"
-  KAFKA_CONSOLE_CONSUMER_SH="kafka-console-consumer"
-  KAFKA_CONSOLE_PRODUCER_SH="kafka-console-producer"
-elif [ -x "$(command -v kafka-topics.sh)" ]; then
-  KAFKA_TOPICS_SH="kafka-topics.sh"
-  KAFKA_CONSOLE_CONSUMER_SH="kafka-console-consumer.sh"
-  KAFKA_CONSOLE_PRODUCER_SH="kafka-console-producer.sh"
-else
-  echo "Can't find kafka scripts like kafka-topics"
-  exit 2
-fi
+case "${COMMAND}" in
+kafka-setup|kafka-tail|kafka-input)
+  # Helps execute kafka-foo or kafka-foo.sh as appropriate.
+  # Kind of assume we're using all one or the other
+  if [ -x "$(command -v kafka-topics)" ]; then
+    KAFKA_TOPICS_SH="kafka-topics"
+    KAFKA_CONSOLE_CONSUMER_SH="kafka-console-consumer"
+    KAFKA_CONSOLE_PRODUCER_SH="kafka-console-producer"
+  elif [ -x "$(command -v kafka-topics.sh)" ]; then
+    KAFKA_TOPICS_SH="kafka-topics.sh"
+    KAFKA_CONSOLE_CONSUMER_SH="kafka-console-consumer.sh"
+    KAFKA_CONSOLE_PRODUCER_SH="kafka-console-producer.sh"
+  else
+    echo "Can't find kafka scripts like kafka-topics"
+    exit 2
+  fi
+  ;;
+esac
 
 case "${COMMAND}" in
 batch|speed|serving)
@@ -146,6 +150,9 @@ batch|speed|serving)
     SPARK_DRIVER_JAVA_OPTS="-Dconfig.file=${CONFIG_FILE}"
     SPARK_EXECUTOR_JAVA_OPTS="-Dconfig.file=${CONFIG_FILE_NAME}"
     if [ -n "${JVM_ARGS}" ]; then
+      if [[ "${JVM_ARGS}" == *"-Xmx"* ]]; then
+        echo "Warning: -Xmx is set in --jvm-args, but it will be overridden by .conf file settings";
+      fi
       SPARK_DRIVER_JAVA_OPTS="${JVM_ARGS} ${SPARK_DRIVER_JAVA_OPTS}"
       SPARK_EXECUTOR_JAVA_OPTS="${JVM_ARGS} ${SPARK_EXECUTOR_JAVA_OPTS}"
     fi
@@ -194,7 +201,13 @@ batch|speed|serving)
   spark-submit)
     # Launch Spark-based layer with spark-submit
 
-    SPARK_SUBMIT_CMD="spark-submit --master ${SPARK_MASTER} --name ${APP_NAME} --class ${MAIN_CLASS} \
+    if [ -x "$(command -v spark2-submit)" ]; then
+      SPARK_SUBMIT_SCRIPT="spark2-submit"
+    else
+      SPARK_SUBMIT_SCRIPT="spark-submit"
+    fi
+
+    SPARK_SUBMIT_CMD="${SPARK_SUBMIT_SCRIPT} --master ${SPARK_MASTER} --name ${APP_NAME} --class ${MAIN_CLASS} \
      --jars ${SPARK_STREAMING_JARS} --files ${CONFIG_FILE} --driver-memory ${DRIVER_MEMORY} \
      --driver-java-options \"${SPARK_DRIVER_JAVA_OPTS}\" --executor-memory ${EXECUTOR_MEMORY} --executor-cores ${EXECUTOR_CORES} \
      --conf spark.executor.extraJavaOptions=\"${SPARK_EXECUTOR_JAVA_OPTS}\" --conf spark.ui.port=${SPARK_UI_PORT}"

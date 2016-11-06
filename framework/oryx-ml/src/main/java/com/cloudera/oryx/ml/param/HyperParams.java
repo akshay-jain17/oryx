@@ -104,8 +104,9 @@ public final class HyperParams {
           // continue
         }
         return unorderedFromValues(Collections.singletonList(stringValue));
+      default:
+        throw new IllegalArgumentException("No valid parameter range for key " + key);
     }
-    throw new IllegalArgumentException("No valid parameter range for key " + key);
   }
 
   /**
@@ -128,7 +129,7 @@ public final class HyperParams {
 
     int numParams = ranges.size();
     if (numParams == 0 || perParam == 0) {
-      return Collections.<List<?>>singletonList(Collections.emptyList());
+      return Collections.singletonList(Collections.emptyList());
     }
 
     // Put some reasonable upper limit on the number of combos

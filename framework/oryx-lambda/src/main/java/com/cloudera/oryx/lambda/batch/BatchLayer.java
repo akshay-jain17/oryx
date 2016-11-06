@@ -15,11 +15,15 @@
 
 package com.cloudera.oryx.lambda.batch;
 
+import java.util.regex.Pattern;
+
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
 import kafka.message.MessageAndMetadata;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
+import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
@@ -45,7 +49,7 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
 
   private static final Logger log = LoggerFactory.getLogger(BatchLayer.class);
 
-  private static final int NO_MAX_DATA_AGE = -1;
+  private static final int NO_MAX_AGE = -1;
 
   private final Class<? extends Writable> keyWritableClass;
   private final Class<? extends Writable> messageWritableClass;
@@ -53,6 +57,7 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
   private final String dataDirString;
   private final String modelDirString;
   private final int maxDataAgeHours;
+  private final int maxModelAgeHours;
   private JavaStreamingContext streamingContext;
 
   public BatchLayer(Config config) {
@@ -65,9 +70,11 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     this.dataDirString = config.getString("oryx.batch.storage.data-dir");
     this.modelDirString = config.getString("oryx.batch.storage.model-dir");
     this.maxDataAgeHours = config.getInt("oryx.batch.storage.max-age-data-hours");
+    this.maxModelAgeHours = config.getInt("oryx.batch.storage.max-age-model-hours");
     Preconditions.checkArgument(!dataDirString.isEmpty());
     Preconditions.checkArgument(!modelDirString.isEmpty());
-    Preconditions.checkArgument(maxDataAgeHours >= 0 || maxDataAgeHours == NO_MAX_DATA_AGE);
+    Preconditions.checkArgument(maxDataAgeHours >= 0 || maxDataAgeHours == NO_MAX_AGE);
+    Preconditions.checkArgument(maxModelAgeHours >= 0 || maxModelAgeHours == NO_MAX_AGE);
   }
 
   @Override
@@ -87,15 +94,17 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     }
 
     streamingContext = buildStreamingContext();
+    JavaSparkContext sparkContext = streamingContext.sparkContext();
+    Configuration hadoopConf = sparkContext.hadoopConfiguration();
 
     Path checkpointPath = new Path(new Path(modelDirString), ".checkpoint");
     log.info("Setting checkpoint dir to {}", checkpointPath);
-    streamingContext.sparkContext().setCheckpointDir(checkpointPath.toString());
+    sparkContext.setCheckpointDir(checkpointPath.toString());
 
     log.info("Creating message stream from topic");
-    JavaInputDStream<MessageAndMetadata<K,M>> dStream = buildInputDStream(streamingContext);
-
-    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(km -> new Tuple2<>(km.key(), km.message()));
+    JavaInputDStream<MessageAndMetadata<K,M>> kafkaDStream = buildInputDStream(streamingContext);
+    JavaPairDStream<K,M> pairDStream =
+        kafkaDStream.mapToPair(mAndM -> new Tuple2<>(mAndM.key(), mAndM.message()));
 
     Class<K> keyClass = getKeyClass();
     Class<M> messageClass = getMessageClass();
@@ -118,14 +127,22 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
         messageClass,
         keyWritableClass,
         messageWritableClass,
-        streamingContext.sparkContext().hadoopConfiguration()));
+        hadoopConf));
 
-    dStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
+    // Must use the raw Kafka stream to get offsets
+    kafkaDStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
 
-    if (maxDataAgeHours != NO_MAX_DATA_AGE) {
-      dStream.foreachRDD(new DeleteOldDataFn<>(streamingContext.sparkContext().hadoopConfiguration(),
-                                               dataDirString,
-                                               maxDataAgeHours));
+    if (maxDataAgeHours != NO_MAX_AGE) {
+      pairDStream.foreachRDD(new DeleteOldDataFn<>(hadoopConf,
+                                                   dataDirString,
+                                                   Pattern.compile("-(\\d+)\\."),
+                                                   maxDataAgeHours));
+    }
+    if (maxModelAgeHours != NO_MAX_AGE) {
+      pairDStream.foreachRDD(new DeleteOldDataFn<>(hadoopConf,
+                                                   modelDirString,
+                                                   Pattern.compile("(\\d+)"),
+                                                   maxModelAgeHours));
     }
 
     log.info("Starting Spark Streaming");
@@ -133,10 +150,14 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     streamingContext.start();
   }
 
-  public void await() {
-    Preconditions.checkState(streamingContext != null);
+  public void await() throws InterruptedException {
+    JavaStreamingContext theStreamingContext;
+    synchronized (this) {
+      theStreamingContext = streamingContext;
+      Preconditions.checkState(theStreamingContext != null);
+    }
     log.info("Spark Streaming is running");
-    streamingContext.awaitTermination();
+    theStreamingContext.awaitTermination(); // Can't do this with lock
   }
 
   @Override

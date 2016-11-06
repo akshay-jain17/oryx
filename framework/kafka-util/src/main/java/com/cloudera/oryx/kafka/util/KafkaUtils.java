@@ -19,12 +19,20 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
 import kafka.admin.AdminUtils;
+import kafka.api.OffsetRequest$;
+import kafka.api.PartitionOffsetRequestInfo;
+import kafka.common.ErrorMapping;
 import kafka.common.TopicAndPartition;
 import kafka.common.TopicExistsException;
+import kafka.consumer.ConsumerConfig;
+import kafka.javaapi.OffsetRequest;
+import kafka.javaapi.OffsetResponse;
+import kafka.javaapi.consumer.SimpleConsumer;
 import kafka.utils.ZKGroupTopicDirs;
 import kafka.utils.ZkUtils;
 import kafka.utils.ZkUtils$;
@@ -32,6 +40,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Option;
 import scala.collection.JavaConversions;
+
+import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * Kafka-related utility methods.
@@ -43,8 +53,7 @@ public final class KafkaUtils {
   private static final int ZK_TIMEOUT_MSEC =
       (int) TimeUnit.MILLISECONDS.convert(30, TimeUnit.SECONDS);
 
-  private KafkaUtils() {
-  }
+  private KafkaUtils() {}
 
   /**
    * @param zkServers Zookeeper server string: host1:port1[,host2:port2,...]
@@ -122,11 +131,11 @@ public final class KafkaUtils {
    * @param topic topic to get offsets for
    * @return mapping of (topic and) partition to offset
    */
-  public static Map<TopicAndPartition,Long> getOffsets(String zkServers,
-                                                       String groupID,
-                                                       String topic) {
+  public static Map<Pair<String,Integer>,Long> getOffsets(String zkServers,
+                                                          String groupID,
+                                                          String topic) {
     ZKGroupTopicDirs topicDirs = new ZKGroupTopicDirs(groupID, topic);
-    Map<TopicAndPartition,Long> offsets = new HashMap<>();
+    Map<Pair<String,Integer>,Long> offsets = new HashMap<>();
     ZkUtils zkUtils = ZkUtils.apply(zkServers, ZK_TIMEOUT_MSEC, ZK_TIMEOUT_MSEC, false);
     try {
       List<?> partitions = JavaConversions.seqAsJavaList(
@@ -136,9 +145,7 @@ public final class KafkaUtils {
         String partitionOffsetPath = topicDirs.consumerOffsetDir() + "/" + partition;
         Option<String> maybeOffset = zkUtils.readDataMaybeNull(partitionOffsetPath)._1();
         Long offset = maybeOffset.isDefined() ? Long.parseLong(maybeOffset.get()) : null;
-        TopicAndPartition topicAndPartition =
-            new TopicAndPartition(topic, Integer.parseInt(partition.toString()));
-        offsets.put(topicAndPartition, offset);
+        offsets.put(new Pair<>(topic, Integer.parseInt(partition.toString())), offset);
       });
     } finally {
       zkUtils.close();
@@ -153,12 +160,12 @@ public final class KafkaUtils {
    */
   public static void setOffsets(String zkServers,
                                 String groupID,
-                                Map<TopicAndPartition,Long> offsets) {
+                                Map<Pair<String,Integer>,Long> offsets) {
     ZkUtils zkUtils = ZkUtils.apply(zkServers, ZK_TIMEOUT_MSEC, ZK_TIMEOUT_MSEC, false);
     try {
       offsets.forEach((topicAndPartition, offset) -> {
-        ZKGroupTopicDirs topicDirs = new ZKGroupTopicDirs(groupID, topicAndPartition.topic());
-        int partition = topicAndPartition.partition();
+        ZKGroupTopicDirs topicDirs = new ZKGroupTopicDirs(groupID, topicAndPartition.getFirst());
+        int partition = topicAndPartition.getSecond();
         String partitionOffsetPath = topicDirs.consumerOffsetDir() + "/" + partition;
         zkUtils.updatePersistentPath(partitionOffsetPath,
                                      Long.toString(offset),
@@ -167,6 +174,96 @@ public final class KafkaUtils {
     } finally {
       zkUtils.close();
     }
+  }
+
+  // Inspired by KafkaCluster from Spark Kafka 0.8 connector:
+
+  public static void fillInLatestOffsets(Map<Pair<String,Integer>,Long> offsets,
+                                         Map<String,String> kafkaParams) {
+
+    Properties props = new Properties();
+    kafkaParams.forEach(props::put);
+    ConsumerConfig config = new ConsumerConfig(props);
+
+    Map<TopicAndPartition,PartitionOffsetRequestInfo> latestRequests = new HashMap<>();
+    Map<TopicAndPartition,PartitionOffsetRequestInfo> earliestRequests = new HashMap<>();
+    offsets.keySet().forEach(topicPartition -> {
+      TopicAndPartition tAndP = new TopicAndPartition(topicPartition.getFirst(), topicPartition.getSecond());
+      latestRequests.put(tAndP, new PartitionOffsetRequestInfo(OffsetRequest$.MODULE$.LatestTime(), 1));
+      earliestRequests.put(tAndP, new PartitionOffsetRequestInfo(OffsetRequest$.MODULE$.EarliestTime(), 1));
+    });
+    OffsetRequest latestRequest = new OffsetRequest(latestRequests,
+                                                    OffsetRequest$.MODULE$.CurrentVersion(),
+                                                    config.clientId());
+    OffsetRequest earliestRequest = new OffsetRequest(earliestRequests,
+                                                      OffsetRequest$.MODULE$.CurrentVersion(),
+                                                      config.clientId());
+
+    SimpleConsumer consumer = null;
+    for (String hostPort : kafkaParams.get("bootstrap.servers").split(",")) {
+      log.info("Connecting to broker {}", hostPort);
+      String[] hp = hostPort.split(":");
+      String host = hp[0];
+      int port = Integer.parseInt(hp[1]);
+      try {
+        consumer = new SimpleConsumer(host, port,
+                                      config.socketTimeoutMs(),
+                                      config.socketReceiveBufferBytes(),
+                                      config.clientId());
+        break;
+      } catch (Exception e) {
+        log.warn("Error while connecting to broker {}:{}", host, port, e);
+      }
+    }
+    Objects.requireNonNull(consumer, "No available brokers");
+
+    try {
+      OffsetResponse latestResponse = requestOffsets(consumer, latestRequest);
+      OffsetResponse earliestResponse = requestOffsets(consumer, earliestRequest);
+      offsets.keySet().forEach(topicPartition -> {
+        long latestTopicOffset = getOffset(latestResponse, topicPartition);
+        Long currentOffset = offsets.get(topicPartition);
+        if (currentOffset == null) {
+          log.info("No initial offsets for {}; using latest offset {} from topic",
+                   topicPartition, latestTopicOffset);
+          offsets.put(topicPartition, latestTopicOffset);
+        } else if (currentOffset > latestTopicOffset) {
+          log.warn("Initial offset {} for {} after latest offset {} from topic! using topic offset",
+                   currentOffset, topicPartition, latestTopicOffset);
+          offsets.put(topicPartition, latestTopicOffset);
+        } else {
+          long earliestTopicOffset = getOffset(earliestResponse, topicPartition);
+          if (currentOffset < earliestTopicOffset) {
+            log.warn("Initial offset {} for {} before earliest offset {} from topic! using topic offset",
+                     currentOffset, topicPartition, earliestTopicOffset);
+            offsets.put(topicPartition, earliestTopicOffset);
+          }
+        }
+      });
+    } finally {
+      consumer.close();
+    }
+
+  }
+
+  private static long getOffset(OffsetResponse response, Pair<String,Integer> topicPartition) {
+    String topic = topicPartition.getFirst();
+    int partition = topicPartition.getSecond();
+    long[] offsets = response.offsets(topic, partition);
+    if (offsets.length > 0) {
+      return offsets[0];
+    }
+    short errorCode = response.errorCode(topic, partition);
+    if (errorCode == ErrorMapping.UnknownTopicOrPartitionCode()) {
+      return 0;
+    }
+    throw new IllegalStateException(
+        "Error reading offset for " + topic + " / " + partition + ": " +
+        ErrorMapping.exceptionNameFor(errorCode));
+  }
+
+  private static OffsetResponse requestOffsets(SimpleConsumer consumer, OffsetRequest request) {
+    return consumer.getOffsetsBefore(request);
   }
 
 }

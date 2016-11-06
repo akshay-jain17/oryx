@@ -17,12 +17,12 @@ package com.cloudera.oryx.example.serving
 
 import com.typesafe.config.Config
 
-import scala.collection.{mutable, JavaConversions}
+import scala.collection.mutable
+import scala.collection.JavaConverters._
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.hadoop.conf.Configuration
 
-import com.cloudera.oryx.api.KeyMessage
 import com.cloudera.oryx.api.serving.{ServingModel, AbstractScalaServingModelManager}
 
 /**
@@ -31,36 +31,30 @@ import com.cloudera.oryx.api.serving.{ServingModel, AbstractScalaServingModelMan
  * Updates are "word,count" pairs representing new counts for a word. This class manages and exposes the
  * mapping to the Serving Layer applications.
  */
-class ExampleScalaServingModelManager(val config: Config) extends AbstractScalaServingModelManager[String](config) {
+class ExampleScalaServingModelManager(val config: Config)
+    extends AbstractScalaServingModelManager[String](config) {
 
   private val distinctOtherWords = mutable.Map[String,Integer]()
 
-  override def consume(updateIterator: Iterator[KeyMessage[String,String]], hadoopConf: Configuration) = {
-    updateIterator.foreach(km =>
-      km.getKey match {
-        case "MODEL" =>
-          val model = JavaConversions.mapAsScalaMap(
-            new ObjectMapper().readValue(km.getMessage, classOf[java.util.Map[String,String]]))
-          distinctOtherWords.synchronized(
-            distinctOtherWords.clear()
-          )
+  override def consumeKeyMessage(key: String, message: String, hadoopConf: Configuration): Unit = {
+    key match {
+      case "MODEL" =>
+        val model =
+          new ObjectMapper().readValue(message, classOf[java.util.Map[String,String]]).asScala
+        distinctOtherWords.synchronized {
+          distinctOtherWords.clear()
           model.foreach { case (word, count) =>
-            distinctOtherWords.synchronized(
-              distinctOtherWords.put(word, count.toInt)
-            )
-          }
-        case "UP" =>
-          val Array(word, count) = km.getMessage.split(",")
-          distinctOtherWords.synchronized(
             distinctOtherWords.put(word, count.toInt)
-          )
-      }
-    )
+          }
+        }
+      case "UP" =>
+        val Array(word, count) = message.split(",")
+        distinctOtherWords.synchronized(
+          distinctOtherWords.put(word, count.toInt)
+        )
+    }
   }
 
-  override def getModel = new ServingModel() {
-    override def getFractionLoaded = 1.0f
-    def getWords: Map[String,Integer] = distinctOtherWords.toMap
-  }
+  override def getModel: ServingModel = new ExampleServingModel(distinctOtherWords.asJava)
 
 }

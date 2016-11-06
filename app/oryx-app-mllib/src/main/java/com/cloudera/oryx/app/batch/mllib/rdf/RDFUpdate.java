@@ -30,9 +30,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import com.google.common.base.Preconditions;
+import com.koloboke.collect.map.IntLongMap;
+import com.koloboke.collect.map.hash.HashIntLongMaps;
 import com.typesafe.config.Config;
-import net.openhft.koloboke.collect.map.IntLongMap;
-import net.openhft.koloboke.collect.map.hash.HashIntLongMaps;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -48,21 +48,19 @@ import org.apache.spark.mllib.tree.model.Split;
 import org.dmg.pmml.Array;
 import org.dmg.pmml.DataDictionary;
 import org.dmg.pmml.FieldName;
-import org.dmg.pmml.MiningFunctionType;
-import org.dmg.pmml.MiningModel;
-import org.dmg.pmml.MissingValueStrategyType;
+import org.dmg.pmml.MiningFunction;
 import org.dmg.pmml.Model;
-import org.dmg.pmml.MultipleModelMethodType;
-import org.dmg.pmml.Node;
 import org.dmg.pmml.PMML;
 import org.dmg.pmml.Predicate;
 import org.dmg.pmml.ScoreDistribution;
-import org.dmg.pmml.Segment;
-import org.dmg.pmml.Segmentation;
 import org.dmg.pmml.SimplePredicate;
 import org.dmg.pmml.SimpleSetPredicate;
-import org.dmg.pmml.TreeModel;
 import org.dmg.pmml.True;
+import org.dmg.pmml.mining.MiningModel;
+import org.dmg.pmml.mining.Segment;
+import org.dmg.pmml.mining.Segmentation;
+import org.dmg.pmml.tree.Node;
+import org.dmg.pmml.tree.TreeModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.collection.JavaConversions;
@@ -216,7 +214,7 @@ public final class RDFUpdate extends MLUpdate<String> {
         data.forEachRemaining(datum ->
           categoryValues.forEach((category, values) -> values.add(datum[category]))
         );
-        return Collections.singleton(categoryValues);
+        return Collections.singleton(categoryValues).iterator();
       }).reduce((v1, v2) -> {
         // Assumes both have the same key set
         v1.forEach((category, values) -> values.addAll(v2.get(category)));
@@ -290,7 +288,7 @@ public final class RDFUpdate extends MLUpdate<String> {
           }
         });
         return Collections.<List<Map<Integer,Long>>>singleton(
-            treeNodeIDCounts.stream().map(HashMap::new).collect(Collectors.toList()));
+            treeNodeIDCounts.stream().map(HashMap::new).collect(Collectors.toList())).iterator();
       }
     ).reduce((a, b) -> {
         Preconditions.checkArgument(a.size() == b.size());
@@ -328,7 +326,8 @@ public final class RDFUpdate extends MLUpdate<String> {
           }
         });
         // Clone to avoid problem with Kryo serializing Koloboke
-        return Collections.<Map<Integer,Long>>singleton(new HashMap<>(featureIndexCount));
+        return Collections.<Map<Integer,Long>>singleton(
+            new HashMap<>(featureIndexCount)).iterator();
     }).reduce(RDFUpdate::merge);
   }
 
@@ -385,9 +384,9 @@ public final class RDFUpdate extends MLUpdate<String> {
     } else {
       MiningModel miningModel = new MiningModel();
       model = miningModel;
-      MultipleModelMethodType multipleModelMethodType = classificationTask ?
-          MultipleModelMethodType.WEIGHTED_MAJORITY_VOTE :
-          MultipleModelMethodType.WEIGHTED_AVERAGE;
+      Segmentation.MultipleModelMethod multipleModelMethodType = classificationTask ?
+          Segmentation.MultipleModelMethod.WEIGHTED_MAJORITY_VOTE :
+          Segmentation.MultipleModelMethod.WEIGHTED_AVERAGE;
       List<Segment> segments = new ArrayList<>(trees.length);
       for (int treeID = 0; treeID < trees.length; treeID++) {
         TreeModel treeModel =
@@ -401,9 +400,9 @@ public final class RDFUpdate extends MLUpdate<String> {
       miningModel.setSegmentation(new Segmentation(multipleModelMethodType, segments));
     }
 
-    model.setFunctionName(classificationTask ?
-                          MiningFunctionType.CLASSIFICATION :
-                          MiningFunctionType.REGRESSION);
+    model.setMiningFunction(classificationTask ?
+                            MiningFunction.CLASSIFICATION :
+                            MiningFunction.REGRESSION);
 
     double[] importances = countsToImportances(predictorIndexCounts);
     model.setMiningSchema(AppPMMLUtils.buildMiningSchema(inputSchema, importances));
@@ -435,7 +434,7 @@ public final class RDFUpdate extends MLUpdate<String> {
     modelNodes.add(root);
 
     Queue<Pair<org.apache.spark.mllib.tree.model.Node,Split>> treeNodes = new ArrayDeque<>();
-    treeNodes.add(new Pair<>(dtModel.topNode(), (Split) null));
+    treeNodes.add(new Pair<>(dtModel.topNode(), null));
 
     while (!treeNodes.isEmpty()) {
 
@@ -501,7 +500,7 @@ public final class RDFUpdate extends MLUpdate<String> {
         modelNodes.add(positiveModelNode);
         modelNodes.add(negativeModelNode);
         treeNodes.add(new Pair<>(rightTreeNode, split));
-        treeNodes.add(new Pair<>(leftTreeNode, (Split) null));
+        treeNodes.add(new Pair<>(leftTreeNode, null));
 
       }
 
@@ -510,7 +509,7 @@ public final class RDFUpdate extends MLUpdate<String> {
     return new TreeModel()
         .setNode(root)
         .setSplitCharacteristic(TreeModel.SplitCharacteristic.BINARY_SPLIT)
-        .setMissingValueStrategy(MissingValueStrategyType.DEFAULT_CHILD);
+        .setMissingValueStrategy(TreeModel.MissingValueStrategy.DEFAULT_CHILD);
   }
 
   private Predicate buildPredicate(Split split,

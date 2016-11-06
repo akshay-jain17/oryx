@@ -26,14 +26,19 @@ import org.apache.catalina.LifecycleException;
 import org.apache.catalina.Server;
 import org.apache.catalina.Wrapper;
 import org.apache.catalina.authenticator.DigestAuthenticator;
+import org.apache.catalina.authenticator.jaspic.AuthConfigFactoryImpl;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.core.JreMemoryLeakPreventionListener;
 import org.apache.catalina.core.ThreadLocalLeakPreventionListener;
 import org.apache.catalina.startup.Tomcat;
+import org.apache.coyote.http11.Http11Nio2Protocol;
+import org.apache.coyote.http2.Http2Protocol;
 import org.apache.tomcat.util.descriptor.web.ErrorPage;
 import org.apache.tomcat.util.descriptor.web.LoginConfig;
 import org.apache.tomcat.util.descriptor.web.SecurityCollection;
 import org.apache.tomcat.util.descriptor.web.SecurityConstraint;
+import org.apache.tomcat.util.net.SSLHostConfig;
+import org.apache.tomcat.util.net.SSLHostConfigCertificate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,10 +47,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
 import java.util.Objects;
-import javax.net.ssl.SSLContext;
+import javax.security.auth.message.config.AuthConfigFactory;
 import javax.servlet.MultipartConfigElement;
 import javax.servlet.http.HttpServletResponse;
 
@@ -73,6 +76,7 @@ public final class ServingLayer implements Closeable {
   private final String password;
   private final Path keystoreFile;
   private final String keystorePassword;
+  private final String keyAlias;
   private final String contextPathURIBase;
   private final String appResourcesPackages;
   private final boolean doNotInitTopics;
@@ -99,6 +103,7 @@ public final class ServingLayer implements Closeable {
     this.keystoreFile = keystoreFileString == null ? null : Paths.get(keystoreFileString);
     this.keystorePassword =
         ConfigUtils.getOptionalString(config, "oryx.serving.api.keystore-password");
+    this.keyAlias = ConfigUtils.getOptionalString(config, "oryx.serving.api.key-alias");
     String contextPathString = config.getString("oryx.serving.api.context-path");
     if (contextPathString == null ||
         contextPathString.isEmpty() ||
@@ -143,7 +148,11 @@ public final class ServingLayer implements Closeable {
    * Blocks and waits until the server shuts down.
    */
   public void await() {
-    tomcat.getServer().await();
+    Server server;
+    synchronized (this) {
+      server = tomcat.getServer();
+    }
+    server.await(); // Can't do this with lock held
   }
 
   /**
@@ -192,9 +201,10 @@ public final class ServingLayer implements Closeable {
   }
 
   private Connector makeConnector() {
-    Connector connector = new Connector("org.apache.coyote.http11.Http11NioProtocol");
+    Connector connector = new Connector(Http11Nio2Protocol.class.getName());
 
-    if (keystoreFile == null && keystorePassword == null) {
+    if (keystoreFile == null) {
+
       // HTTP connector
       connector.setPort(port);
       connector.setSecure(false);
@@ -207,19 +217,20 @@ public final class ServingLayer implements Closeable {
       connector.setSecure(true);
       connector.setScheme("https");
       connector.setAttribute("SSLEnabled", "true");
-      String protocol = chooseSSLProtocol("TLSv1.2", "TLSv1.1");
-      if (protocol != null) {
-        connector.setAttribute("sslProtocol", protocol);
-      }
-      if (keystoreFile != null) {
-        connector.setAttribute("keystoreFile", keystoreFile.toAbsolutePath().toFile());
-      }
-      connector.setAttribute("keystorePass", keystorePassword);
+      SSLHostConfig sslHostConfig = new SSLHostConfig();
+      SSLHostConfigCertificate cert =
+          new SSLHostConfigCertificate(sslHostConfig, SSLHostConfigCertificate.Type.RSA);
+      cert.setCertificateKeystoreFile(keystoreFile.toAbsolutePath().toString());
+      cert.setCertificateKeystorePassword(keystorePassword);
+      cert.setCertificateKeyAlias(keyAlias);
+      sslHostConfig.addCertificate(cert);
+      connector.addSslHostConfig(sslHostConfig);
     }
+
+    connector.addUpgradeProtocol(new Http2Protocol());
 
     // Keep quiet about the server type
     connector.setXpoweredBy(false);
-    connector.setAttribute("server", "Oryx");
 
     // Basic tuning params:
     connector.setAttribute("maxThreads", 400);
@@ -242,19 +253,6 @@ public final class ServingLayer implements Closeable {
     connector.setAttribute("compressableMimeType", "text/html,text/xml,text/plain,text/css,text/csv,application/json");
 
     return connector;
-  }
-
-  private static String chooseSSLProtocol(String... protocols) {
-    for (String protocol : protocols) {
-      try {
-        SSLContext.getInstance(protocol);
-        return protocol;
-      } catch (NoSuchAlgorithmException ignored) {
-        log.info("SSL protocol {} is not supported", protocol);
-      }
-    }
-    log.warn("No supported SSL protocols among {}", Arrays.toString(protocols));
-    return null;
   }
 
   private void makeContext(Tomcat tomcat, Path noSuchBaseDir) throws IOException {
@@ -286,6 +284,9 @@ public final class ServingLayer implements Closeable {
     if (!doNotInitTopics) { // Only for tests
       context.addApplicationListener(ModelManagerListener.class.getName());
     }
+
+    // Better way to configure JASPIC?
+    AuthConfigFactory.setFactory(new AuthConfigFactoryImpl());
 
     boolean needHTTPS = keystoreFile != null;
     boolean needAuthentication = userName != null;

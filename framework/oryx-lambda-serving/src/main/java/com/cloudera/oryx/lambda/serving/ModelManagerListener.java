@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.StreamSupport;
 
 import com.google.common.base.Preconditions;
@@ -64,7 +65,8 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
   private static final Logger log = LoggerFactory.getLogger(ModelManagerListener.class);
 
   static final String MANAGER_KEY = ModelManagerListener.class.getName() + ".ModelManager";
-  static final String INPUT_PRODUCER_KEY = ModelManagerListener.class.getName() + ".InputProducer";
+  private static final String INPUT_PRODUCER_KEY =
+      ModelManagerListener.class.getName() + ".InputProducer";
 
   private Config config;
   private String updateTopic;
@@ -117,11 +119,16 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
 
     consumer = Consumer.createJavaConsumerConnector(new ConsumerConfig(
         ConfigUtils.keyValueToProperties(
-            "group.id", "OryxGroup-ServingLayer-" + System.currentTimeMillis(),
+            "group.id", "OryxGroup-ServingLayer-" + UUID.randomUUID(),
             "zookeeper.connect", updateTopicLockMaster,
             "fetch.message.max.bytes", maxMessageSize,
             // Do start from the beginning of the update queue
-            "auto.offset.reset", "smallest"
+            "auto.offset.reset", "smallest" // becomes "earliest" in Kafka 0.9+
+            // Above are for Kafka 0.8; following are for 0.9+
+            //"bootstrap.servers", updateTopicBroker,
+            //"max.partition.fetch.bytes", maxMessageSize,
+            //"key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+            //"value.deserializer", updateDecoderClass.getName()
         )));
     KafkaStream<String,U> stream =
         consumer.createMessageStreams(Collections.singletonMap(updateTopic, 1),
@@ -133,9 +140,14 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
 
     modelManager = loadManagerInstance();
     new Thread(LoggingCallable.log(() -> {
+      // Possible if it shuts down immediately; just exit
+      if (modelManager == null) {
+        return;
+      }
       // Can we do better than a default Hadoop config? Nothing else provides it here
+      Configuration hadoopConf = new Configuration();
       try {
-        modelManager.consume(transformed, new Configuration());
+        modelManager.consume(transformed, hadoopConf);
       } catch (Throwable t) {
         log.error("Error while consuming updates", t);
         // Ideally we would shut down ServingLayer, but not clear how to plumb that through

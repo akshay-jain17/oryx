@@ -19,11 +19,8 @@ import java.io.Closeable;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
@@ -36,15 +33,13 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.Duration;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
-import org.apache.spark.streaming.kafka.KafkaCluster;
-import org.apache.spark.streaming.kafka.KafkaUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.collection.JavaConversions;
 
+import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.lang.ClassUtils;
-import com.cloudera.oryx.common.random.RandomManager;
 import com.cloudera.oryx.common.settings.ConfigUtils;
+import com.cloudera.oryx.kafka.util.KafkaUtils;
 
 /**
  * Encapsulates commonality between Spark-based layer processes,
@@ -81,7 +76,7 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
     String group = getConfigGroup();
     this.config = config;
     String configuredID = ConfigUtils.getOptionalString(config, "oryx.id");
-    this.id = configuredID == null ? generateRandomID() : configuredID;
+    this.id = configuredID == null ? UUID.randomUUID().toString() : configuredID;
     this.streamingMaster = config.getString("oryx." + group + ".streaming.master");
     this.inputTopic = config.getString("oryx.input-topic.message.topic");
     this.inputTopicLockMaster = config.getString("oryx.input-topic.lock.master");
@@ -103,10 +98,6 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
     );
 
     Preconditions.checkArgument(generationIntervalSec > 0);
-  }
-
-  private static String generateRandomID() {
-    return Integer.toString(RandomManager.getRandom().nextInt() & 0x7FFFFFFF);
   }
 
   /**
@@ -180,29 +171,27 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
       JavaStreamingContext streamingContext) {
 
     Preconditions.checkArgument(
-        com.cloudera.oryx.kafka.util.KafkaUtils.topicExists(inputTopicLockMaster, inputTopic),
+        KafkaUtils.topicExists(inputTopicLockMaster, inputTopic),
         "Topic %s does not exist; did you create it?", inputTopic);
     if (updateTopic != null && updateTopicLockMaster != null) {
       Preconditions.checkArgument(
-          com.cloudera.oryx.kafka.util.KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
+          KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
           "Topic %s does not exist; did you create it?", updateTopic);
     }
 
     Map<String,String> kafkaParams = new HashMap<>();
-    //kafkaParams.put("zookeeper.connect", inputTopicLockMaster);
+    kafkaParams.put("zookeeper.connect", inputTopicLockMaster); // needed for SimpleConsumer later
     String groupID = getGroupID();
     kafkaParams.put("group.id", groupID);
     // Don't re-consume old messages from input by default
-    kafkaParams.put("auto.offset.reset", "largest");
+    kafkaParams.put("auto.offset.reset", "largest"); // becomes "latest" in Kafka 0.9+
     kafkaParams.put("metadata.broker.list", inputBroker);
     // Newer version of metadata.broker.list:
     kafkaParams.put("bootstrap.servers", inputBroker);
 
-    Map<TopicAndPartition,Long> offsets =
-        com.cloudera.oryx.kafka.util.KafkaUtils.getOffsets(inputTopicLockMaster,
-                                                           groupID,
-                                                           inputTopic);
-    fillInLatestOffsets(offsets, kafkaParams);
+    Map<Pair<String,Integer>,Long> offsets =
+        KafkaUtils.getOffsets(inputTopicLockMaster, groupID, inputTopic);
+    KafkaUtils.fillInLatestOffsets(offsets, kafkaParams);
     log.info("Initial offsets: {}", offsets);
 
     // Ugly compiler-pleasing acrobatics:
@@ -210,45 +199,20 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
     Class<MessageAndMetadata<K,M>> streamClass =
         (Class<MessageAndMetadata<K,M>>) (Class<?>) MessageAndMetadata.class;
 
-    return KafkaUtils.createDirectStream(streamingContext,
-                                         keyClass,
-                                         messageClass,
-                                         keyDecoderClass,
-                                         messageDecoderClass,
-                                         streamClass,
-                                         kafkaParams,
-                                         offsets,
-                                         message -> message);
-  }
+    Map<TopicAndPartition,Long> kafkaOffsets = new HashMap<>(offsets.size());
+    offsets.forEach((tAndP, offset) -> kafkaOffsets.put(
+        new TopicAndPartition(tAndP.getFirst(), tAndP.getSecond()), offset));
 
-  private static void fillInLatestOffsets(Map<TopicAndPartition,Long> offsets, Map<String,String> kafkaParams) {
-    if (offsets.containsValue(null)) {
-
-      Set<TopicAndPartition> needOffset = offsets.entrySet().stream().filter(entry -> entry.getValue() == null)
-          .map(Map.Entry::getKey).collect(Collectors.toSet());
-      log.info("No initial offsets for {}; reading from Kafka", needOffset);
-
-      // The high price of calling private Scala stuff:
-      @SuppressWarnings("unchecked")
-      scala.collection.immutable.Map<String,String> kafkaParamsScalaMap =
-          (scala.collection.immutable.Map<String,String>)
-              scala.collection.immutable.Map$.MODULE$.apply(JavaConversions.mapAsScalaMap(kafkaParams).toSeq());
-      @SuppressWarnings("unchecked")
-      scala.collection.immutable.Set<TopicAndPartition> needOffsetScalaSet =
-          (scala.collection.immutable.Set<TopicAndPartition>)
-              scala.collection.immutable.Set$.MODULE$.apply(JavaConversions.asScalaSet(needOffset).toSeq());
-
-      KafkaCluster kc = new KafkaCluster(kafkaParamsScalaMap);
-      Map<TopicAndPartition,?> leaderOffsets =
-          JavaConversions.mapAsJavaMap(kc.getLatestLeaderOffsets(needOffsetScalaSet).right().get());
-      leaderOffsets.forEach((tAndP, leaderOffsetsObj) -> {
-        // Can't reference LeaderOffset class, so, hack away:
-        Matcher m = Pattern.compile("LeaderOffset\\([^,]+,[^,]+,([^)]+)\\)").matcher(leaderOffsetsObj.toString());
-        Preconditions.checkState(m.matches());
-        offsets.put(tAndP, Long.valueOf(m.group(1)));
-      });
-    }
-
+    return org.apache.spark.streaming.kafka.KafkaUtils.createDirectStream(
+        streamingContext,
+        keyClass,
+        messageClass,
+        keyDecoderClass,
+        messageDecoderClass,
+        streamClass,
+        kafkaParams,
+        kafkaOffsets,
+        message -> message);
   }
 
 }

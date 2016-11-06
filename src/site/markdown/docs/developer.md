@@ -22,9 +22,9 @@ mvn -DskipTests package
 
 This will build the following binaries:
 
-- Batch Layer: `deploy/oryx-batch/target/oryx-batch-2.2.0.jar`
-- Speed Layer: `deploy/oryx-speed/target/oryx-speed-2.2.0.jar`
-- Serving Layer: `deploy/oryx-serving/target/oryx-serving-2.2.0.jar`
+- Batch Layer: `deploy/oryx-batch/target/oryx-batch-2.3.0.jar`
+- Speed Layer: `deploy/oryx-speed/target/oryx-speed-2.3.0.jar`
+- Serving Layer: `deploy/oryx-serving/target/oryx-serving-2.3.0.jar`
 
 Note that if you are interested in developing on Oryx, you should probably 
 [fork this repository](https://help.github.com/articles/fork-a-repo) and then work on 
@@ -96,22 +96,9 @@ In Maven, this would mean adding a dependency like:
     <groupId>com.cloudera.oryx</groupId>
     <artifactId>oryx-api</artifactId>
     <scope>provided</scope>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
   </dependency>
 </dependencies>
-```
-
-The artifacts are currently hosted at the 
-[Cloudera repository](https://repository.cloudera.com/artifactory/cloudera-repos/), so your build will also 
-need a reference to this repo:
-
-```XML
-<repositories>
-  <repository>
-    <id>cloudera</id>
-    <url>https://repository.cloudera.com/artifactory/cloudera-repos/</url>
-  </repository>
-</repositories>
 ```
 
 A minimal skeleton project can be found at [example/](https://github.com/OryxProject/oryx/tree/master/app/example).
@@ -122,17 +109,23 @@ with 2 other distinct words.
 Compile your code and create a JAR file containing only your implementation, and any supporting
 third-party code. With Maven, this happens with `mvn package`.
 
+Note: to enable native BLAS acceleration in your app, see additional notes about BLAS in the
+[performance](performance.html) documentation.
 
 ### Compiling the Word Count Example
 
-For example, to compile the example app:
+Building the entire project with `mvn ... package` per above will actually build the example. 
+The application JAR is produced at `target/example-2.3.0.jar` for example.
+
+To rebuild or repackage just the word count example:
 
 ```
 cd app/example
 mvn package
 ```
 
-The application JAR is produced at `target/example-2.2.0.jar` for example.
+Note that this won't work when building from the head of a branch (a `SNAPSHOT` version) unless
+you first `mvn ... install` the project artifacts locally.
 
 ## Customizing an Oryx App
 
@@ -149,7 +142,7 @@ here for stand-alone applications.
     <groupId>com.cloudera.oryx</groupId>
     <artifactId>oryx-app-api</artifactId>
     <scope>provided</scope>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
   </dependency>
 </dependencies>
 ```
@@ -172,7 +165,7 @@ copying and adapting the provided [`wordcount-example.conf`](https://github.com/
 configuration file:
 
 ```
-./oryx-run.sh batch --conf wordcount-example.conf --app-jar example-2.2.0.jar
+./oryx-run.sh batch --conf wordcount-example.conf --app-jar example-2.3.0.jar
 ```
 
 ... and similarly for the speed and serving layers. Feed lines of input and then observe counts:

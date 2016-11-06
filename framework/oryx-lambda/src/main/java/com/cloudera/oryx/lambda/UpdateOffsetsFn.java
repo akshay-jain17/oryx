@@ -18,8 +18,6 @@ package com.cloudera.oryx.lambda;
 import java.util.HashMap;
 import java.util.Map;
 
-import kafka.common.TopicAndPartition;
-import kafka.message.MessageAndMetadata;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.function.VoidFunction;
 import org.apache.spark.streaming.kafka.HasOffsetRanges;
@@ -27,16 +25,16 @@ import org.apache.spark.streaming.kafka.OffsetRange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.kafka.util.KafkaUtils;
 
 /**
  * Function that reads offset range from latest RDD in a streaming job, and updates
  * Zookeeper/Kafka with the latest offset consumed.
  *
- * @param <K> RDD element's key type (not used)
- * @param <M> RDD element's value type (not used)
+ * @param <T> unused
  */
-public final class UpdateOffsetsFn<K,M> implements VoidFunction<JavaRDD<MessageAndMetadata<K,M>>> {
+public final class UpdateOffsetsFn<T> implements VoidFunction<JavaRDD<T>> {
 
   private static final Logger log = LoggerFactory.getLogger(UpdateOffsetsFn.class);
 
@@ -49,16 +47,15 @@ public final class UpdateOffsetsFn<K,M> implements VoidFunction<JavaRDD<MessageA
   }
 
   /**
-   * @param javaRDD RDD whose underlying RDD must be an instance of {@link HasOffsetRanges},
+   * @param javaRDD RDD whose underlying RDD must be an instance of {@code HasOffsetRanges},
    *  such as {@code KafkaRDD}
    */
   @Override
-  public void call(JavaRDD<MessageAndMetadata<K,M>> javaRDD) {
+  public void call(JavaRDD<T> javaRDD) {
     OffsetRange[] ranges = ((HasOffsetRanges) javaRDD.rdd()).offsetRanges();
-    Map<TopicAndPartition,Long> newOffsets = new HashMap<>(ranges.length);
+    Map<Pair<String,Integer>,Long> newOffsets = new HashMap<>(ranges.length);
     for (OffsetRange range : ranges) {
-      newOffsets.put(new TopicAndPartition(range.topic(), range.partition()),
-                     range.untilOffset());
+      newOffsets.put(new Pair<>(range.topic(), range.partition()), range.untilOffset());
     }
     log.info("Updating offsets: {}", newOffsets);
     KafkaUtils.setOffsets(inputTopicLockMaster, group, newOffsets);

@@ -2,7 +2,14 @@ title: Docs: End Users
 
 # Running
 
-*Note: You must have set up and configured your cluster as shown in the [Admin docs](admin.html).*
+## Setup
+
+You must have set up and configured your cluster as shown in the [Admin docs](admin.html).
+
+In particular, you should have already installed Java 8 on your cluster. In order to make
+subsequent `oryx-run.sh` commands work, it is likely necessary to update the default Java 
+version with `update-alternatives --config java` or equivalent to select Java 8,
+and set `JAVA_HOME` to point to the Java 8 installation.
 
 Download the [latest release](https://github.com/OryxProject/oryx/releases) of the Oryx Batch, 
 Speed and Serving Layer, both `.jar` files and `.sh` scripts. Alternatively, build them 
@@ -21,6 +28,8 @@ that exist and will be accessible to the user running Oryx binaries.
 
 Copy this config file as `oryx.conf` to the same directory as binaries and script
 on each machine.
+
+## Execute
 
 Run the three Layers with:
 
@@ -100,7 +109,7 @@ data files in a subdirectory of `hdfs:///user/example/Oryx/model/`. For example,
 
 ```
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<PMML xmlns="http://www.dmg.org/PMML-4_2" version="4.2.1">
+<PMML xmlns="http://www.dmg.org/PMML-4_3" version="4.3">
     <Header>
         <Application name="Oryx"/>
         <Timestamp>2014-12-18T04:48:54-0800</Timestamp>
@@ -111,6 +120,7 @@ data files in a subdirectory of `hdfs:///user/example/Oryx/model/`. For example,
     <Extension name="lambda" value="0.001"/>
     <Extension name="implicit" value="true"/>
     <Extension name="alpha" value="1.0"/>
+    <Extension name="implicit" value="false"/>
     <Extension name="XIDs">56 168 222 343 397 ...
      ...
 ```
@@ -184,7 +194,7 @@ Oryx bundles several end-to-end applications, including a Serving Layer with RES
 * [`/mostPopularItems`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/MostPopularItems.html)
 * [`/mostActiveUsers`] (http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/MostActiveUsers.html)
 * [`/item/allIDs`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/AllItemIDs.html)
-* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/Ready.html)
+* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/Ready.html)
 * [`/pref`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/Preference.html)
 * [`/ingest`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/als/Ingest.html)
 
@@ -192,14 +202,14 @@ Oryx bundles several end-to-end applications, including a Serving Layer with RES
 
 * [`/predict`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/rdf/Predict.html)
 * [`/classificationDistribution`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/rdf/ClassificationDistribution.html)
-* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/rdf/Ready.html)
+* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/Ready.html)
 * [`/train`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/rdf/Train.html)
 
 ## Clustering
 
 * [`/assign`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/kmeans/Assign.html)
 * [`/distanceToNearest`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/kmeans/DistanceToNearest.html)
-* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/kmeans/Ready.html)
+* [`/ready`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/Ready.html)
 * [`/add`](http://oryx.io/apidocs/com/cloudera/oryx/app/serving/kmeans/Add.html)
 
 # Configuration
@@ -211,4 +221,5 @@ Or see one of the following examples:
 
 - [`app/conf/als-example.conf`](https://github.com/OryxProject/oryx/blob/master/app/conf/als-example.conf)
 - [`app/conf/kmeans-example.conf`](https://github.com/OryxProject/oryx/blob/master/app/conf/kmeans-example.conf)
-- [`app/conf/rdf-example.conf`](https://github.com/OryxProject/oryx/blob/master/app/conf/rdf-example.conf)
+- [`app/conf/rdf-classification-example.conf`](https://github.com/OryxProject/oryx/blob/master/app/conf/rdf-classification-example.conf)
+- [`app/conf/rdf-regression-example.conf`](https://github.com/OryxProject/oryx/blob/master/app/conf/rdf-regression-example.conf)

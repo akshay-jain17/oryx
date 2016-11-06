@@ -25,7 +25,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.function.VoidFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,33 +34,36 @@ import org.slf4j.LoggerFactory;
  *
  * @param <T> unused
  */
-public final class DeleteOldDataFn<T> implements VoidFunction<JavaRDD<T>> {
+public final class DeleteOldDataFn<T> implements VoidFunction<T> {
 
   private static final Logger log = LoggerFactory.getLogger(DeleteOldDataFn.class);
 
-  private static final Pattern DATA_SUBDIR_PATTERN = Pattern.compile("-(\\d+)\\.");
-
   private final Configuration hadoopConf;
   private final String dataDirString;
-  private final int maxDataAgeHours;
+  private final Pattern dirTimestampPattern;
+  private final int maxAgeHours;
 
-  public DeleteOldDataFn(Configuration hadoopConf, String dataDirString, int maxDataAgeHours) {
+  public DeleteOldDataFn(Configuration hadoopConf,
+                         String dataDirString,
+                         Pattern dirTimestampPattern,
+                         int maxAgeHours) {
     this.hadoopConf = hadoopConf;
     this.dataDirString = dataDirString;
-    this.maxDataAgeHours = maxDataAgeHours;
+    this.dirTimestampPattern = dirTimestampPattern;
+    this.maxAgeHours = maxAgeHours;
   }
 
   @Override
-  public void call(JavaRDD<T> ignored) throws IOException {
+  public void call(T ignored) throws IOException {
     Path dataDirPath = new Path(dataDirString + "/*");
     FileSystem fs = FileSystem.get(dataDirPath.toUri(), hadoopConf);
     FileStatus[] inputPathStatuses = fs.globStatus(dataDirPath);
     if (inputPathStatuses != null) {
       long oldestTimeAllowed =
-          System.currentTimeMillis() - TimeUnit.MILLISECONDS.convert(maxDataAgeHours, TimeUnit.HOURS);
+          System.currentTimeMillis() - TimeUnit.MILLISECONDS.convert(maxAgeHours, TimeUnit.HOURS);
       Arrays.stream(inputPathStatuses).filter(FileStatus::isDirectory).map(FileStatus::getPath).
           filter(subdir -> {
-            Matcher m = DATA_SUBDIR_PATTERN.matcher(subdir.getName());
+            Matcher m = dirTimestampPattern.matcher(subdir.getName());
             return m.find() && Long.parseLong(m.group(1)) < oldestTimeAllowed;
           }).forEach(subdir -> {
             log.info("Deleting old data at {}", subdir);

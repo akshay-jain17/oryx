@@ -2,25 +2,48 @@ title: Docs: Admin
 
 # Cluster Setup
 
-The following are required as of Oryx 2.2.0:
+The following are required as of Oryx 2.3.0:
 
 - Java 8 or later (JRE only is required)
+- Scala 2.11 or later
 - A Hadoop cluster running the following components:
-    - Apache Hadoop 2.6.0 or later
+    - Apache Hadoop 2.7.0 or later
     - Apache Zookeeper 3.4.5 or later
     - Apache Kafka 0.9 or later
-    - Apache Spark 1.6.0 or later
+    - Apache Spark 2.0.0 or later
 
 [CDH](http://www.cloudera.com/content/cloudera/en/products-and-services/cdh.html)
-5.7.0 and later meet these requirements, although any Hadoop distribution with these
-components should work fine. While the rest of the instructions will refer to a CDH 5.7+
-distribution, this is not a requirement.
+5.9.0 and later with Kafka and Spark 2 parcels meet these requirements, although any Hadoop 
+distribution with these components should work fine. While the rest of the instructions will refer 
+to a CDH 5.9+ distribution, this is not a requirement.
 
-_Note: Oryx 2.0.x requires only Java 7, Spark 1.3.0, Kafka 0.8 and CDH 5.4.x_
-_Note: Oryx 2.1.x requires only Java 7, Spark 1.5.0, Kafka 0.8 and CDH 5.5.x_
+_Note: Oryx 2.0.x requires only Scala 2.10, Java 7, Spark 1.3.0, Kafka 0.8 and CDH 5.4.x_
+
+_Note: Oryx 2.1.x requires only Scala 2.10, Java 7, Spark 1.5.0, Kafka 0.8 and CDH 5.5.x_
+
+_Note: Oryx 2.2.x requires only Scala 2.10, Hadoop 2.6.0, Spark 1.6.0, and CDH 5.7.x_
 
 A single-node cluster can be sufficient, although running all of these components on one machine
 may require a reasonable amount of RAM.
+
+## Deployment Architecture
+
+Because the Batch and Speed Layers are Spark applications, they need to run within a cluster.
+The applications themselves run the driver for these Spark applications, and these may run on
+an edge node in a cluster like any other Spark application.. That is, the binaries themselves 
+do not need to run on a node that also runs a particular service, but, it will need to run
+on a node within the cluster because both Layer application interact extensively with compute
+and storage within the cluster.
+
+The Serving Layer may be run within the cluster too, and may be run via YARN on any node. However
+it's common to consider deploying this Layer, which exposes an API to external services, on a 
+node that is not within the cluster. This is possible. The Serving Layer must be able to communicate
+with a Kafka broker, at a minimum.
+
+In some applications, the Serving Layer also needs to read large models directly from HDFS. In these
+cases, it would also have to access HDFS. This is only required in applications that must write
+large models to HDFS. This is closely related to `oryx.update-topic.message.max-size` and the
+maximum size message that Kafka can support.
 
 ## Services
 
@@ -30,10 +53,14 @@ Install and configure the Hadoop cluster normally. The following services need t
 - YARN
 - Zookeeper
 - Kafka
-- Spark (on YARN)
+- Spark 2
 
-Note that for CDH, Kafka is available as a parcel from
+Note that for CDH 5.x, Spark 2 is available as an [add on](http://www.cloudera.com/documentation/betas/spark2/latest/topics/spark2.html).
+
+Kafka is available as a parcel from
 [Cloudera Labs](http://www.cloudera.com/content/cloudera/en/developers/home/cloudera-labs/apache-kafka.html).
+The Cloudera Kafka 2.x parcel is required, because it contains a distribution of Kafka 0.9. 
+The 2.x parcel is in fact required by CDH 5.7+.
 
 Determine the (possibly several) Kafka brokers that are configured in the cluster, under Instances,
 and note their hosts and port. The port is typically 9092. Same for the Zookeeper servers; the default
@@ -42,10 +69,15 @@ port here is 2181. Default ports will be used in subsequent examples.
 Where a Kafka broker or Zookeeper server is called for, you can and should specify a comma-separated
 list of `host:port` pairs where there are multiple hosts. Example: `your-zk-1:2181,your-zk-2:2181`.
 
-Also note whether your Zookeeper instance is using a chroot path. This is simply a path suffixed
-to the `host:port`, like `your-zk:2181/your-chroot`. It is often `/kafka` if it is set.
-You can omit this if you are not using a chroot. Note: if you have multiple Zookeeper servers, 
-and a chroot, only add the chroot once, at the end: `your-zk-1:2181,your-zk-2:2181/kafka`
+## Java
+
+Java 8 (JRE) needs to be installed on all nodes on the cluster. Cluster processes
+need to use Java 8. Depending on the nature of your Hadoop cluster installation, this may 
+mean updating the default Java version with `update-alternatives --config java` or equivalent,
+or setting `JAVA_HOME` to point to a Java 8 installation.
+
+For CDH in particular, however, instead see 
+[Configuring a Custom Java Home Location](http://www.cloudera.com/documentation/enterprise/latest/topics/cm_ig_java_home_location.html)
 
 ## Configuring Kafka
 
@@ -60,8 +92,10 @@ Batch Layer reads partitions of historical data from HDFS and from Kafka. If the
 topic has just one partition but a large amount of data arrives per interval, then the
 Kafka-based partition of the input may be relatively very large and take a long time 
 to process. A good rule of thumb may be to choose a number of topic partitions such that the
-amount of data that arrives in one batch interval is expected to be about the same as
-one HDFS block, which is 128MB by default.
+amount of data that arrives in one batch interval, per partition, is expected to be under the size
+of one HDFS block, which is 128MB by default. So if you have 1.28GB arriving per batch interval,
+at least 10 partitions is probably a good idea to make sure the data can be processed in reasonably
+sized chunks, and with enough parallelism.
 
 The provided `oryx-run.sh kafka-setup` script configures a default of 4 partitions, but
 this can be changed later. Note that there is no purpose in configuring more than 1
@@ -195,8 +229,8 @@ The content of this subdirectory will depend on the application, but typically c
 called `model.pmml`, and optionally supplementary files that go with the model.
 
 This directory exists to record PMML models for archiving and for use by other tools. Its content
-may be deleted if desired.
-
+may be deleted if desired. Note also that setting `oryx.batch.storage.max-age-model-hours` to a
+nonnegative value will cause models older than the given number of hours to be deleted automatically.
 
 # Cloudera Quickstart VM Setup
 
@@ -207,6 +241,16 @@ This isn't generally suitable for production use.
 - Download and start the cluster VM
     - Give the VM at least 4 cores and 12GB of memory
     - Start the cluster in the VM; CDH Express is fine
+- Install Java 8 (if not already the default)
+    - `sudo yum install java-1.8.0-openjdk` or similar to make a Java 8 implementation available
+    - Launch Cloudera Manager, and log in to the UI (e.g. `localhost:7180`)
+    - If any CDH services are running, stop them
+    - From the "Hosts" menu, select "All Hosts"
+    - Click the "Configuration" button
+    - Under "Category" at the left, choose "Advanced"
+    - In `Java Home Directory`, enter (for example): `/usr/lib/jvm/jre-1.8.0-openjdk.x86_64/`
+    - Click "Save Changes"
+    - Restart the Cloudera Manager service from Cloudera Manager, or else just reboot the VM
 - Configure the cluster
     - In parcel settings, add the location of Kafka parcels, currently http://archive.cloudera.com/kafka/parcels/latest/
     - Distribute and activate the CDH parcel
@@ -301,9 +345,10 @@ and otherwise, it will resume reading from the latest offset.
 
 # Troubleshooting / FAQ
 
-## Unsupported major.minor version 51.0 / 52.0
+## Unsupported major.minor version 52.0
 
-This means you are running Java 6 / 7 somewhere. Oryx 2 requires Java 8 or later.
+This means you are running 7 or earlier somewhere. Oryx 2.2 requires Java 8 or later. 
+See section above on installing Java 8 and making it available everywhere on the cluster.
 
 ## Initial job has not accepted any resources
 
@@ -351,8 +396,17 @@ to ensure older data in the input topic is not read.
 The simplest solution is to create a new input topic and change configuration to use it.
 Then, also delete any pre-existing data in HDFS (or use a new directory). Similarly, since the 
 update topic is read from the beginning, it's easiest to make a new update topic instead.
-While it's possible to reuse the existing topics by carefully managing offsets in Kafka or
-changing the instance `oryx.id` value, these are possibly more complex.
+
+It's possible to reuse an existing topic name, by removing all its data (difficult, not recommended)
+or simply deleting and recreating it. If recreating the topic, it's necessary to reset the consumer
+offset Oryx will use. This can be done by directly manipulating offsets stored in Zookeeper, to 
+delete them (somewhat hard, not recommended), or by simply switching `oryx.id` to another value.
+
+## Speed Layer isn't producing updates, but is running
+
+The Speed Layer won't produce updates until it has loaded a model. Also, check if the Speed Layer's
+batches are queued up. If batches are being created faster than they're processed, then each is
+waiting longer and longer to start processing, delaying their updates.
 
 # Performance
 

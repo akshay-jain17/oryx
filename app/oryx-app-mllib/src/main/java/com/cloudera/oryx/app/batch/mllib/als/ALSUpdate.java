@@ -15,7 +15,6 @@
 
 package com.cloudera.oryx.app.batch.mllib.als;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -23,12 +22,9 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import com.google.common.base.Preconditions;
-import com.google.common.hash.HashFunction;
-import com.google.common.hash.Hashing;
 import com.typesafe.config.Config;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.compress.GzipCodec;
@@ -36,6 +32,7 @@ import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.Function;
+import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.mllib.recommendation.ALS;
 import org.apache.spark.mllib.recommendation.MatrixFactorizationModel;
 import org.apache.spark.mllib.recommendation.Rating;
@@ -59,17 +56,24 @@ import com.cloudera.oryx.ml.param.HyperParamValues;
 import com.cloudera.oryx.ml.param.HyperParams;
 
 /**
- * A specialization of {@link MLUpdate} that creates a matrix factorization model of its
- * input, using the Alternating Least Squares algorithm.
+ * <p>A specialization of {@link MLUpdate} that creates a matrix factorization model of its
+ * input, using the Alternating Least Squares algorithm.</p>
+ *
+ * <p>The implementation is built on Spark MLlib's implementation of ALS, which is in turn
+ * based on the paper
+ * <a href="http://yifanhu.net/PUB/cf.pdf">Collaborative Filtering for Implicit Feedback Datasets</a>.
+ * The parameters used below and in the configuration follow this paper as given.</p>
+ *
+ * <p>Note that this also adds support for log transformation of strength values, as suggested
+ * in Equation 6 of the paper.</p>
  */
 public final class ALSUpdate extends MLUpdate<String> {
 
   private static final Logger log = LoggerFactory.getLogger(ALSUpdate.class);
-  private static final HashFunction HASH = Hashing.md5();
-  private static final Pattern MOST_INTS_PATTERN = Pattern.compile("(0|-?[1-9][0-9]{0,9})");
 
   private final int iterations;
   private final boolean implicit;
+  private final boolean logStrength;
   private final List<HyperParamValues<?>> hyperParamValues;
   private final boolean noKnownItems;
   private final double decayFactor;
@@ -79,11 +83,15 @@ public final class ALSUpdate extends MLUpdate<String> {
     super(config);
     iterations = config.getInt("oryx.als.iterations");
     implicit = config.getBoolean("oryx.als.implicit");
+    logStrength = config.getBoolean("oryx.als.logStrength");
     Preconditions.checkArgument(iterations > 0);
-    hyperParamValues = Arrays.asList(
+    hyperParamValues = new ArrayList<>(Arrays.asList(
         HyperParams.fromConfig(config, "oryx.als.hyperparams.features"),
         HyperParams.fromConfig(config, "oryx.als.hyperparams.lambda"),
-        HyperParams.fromConfig(config, "oryx.als.hyperparams.alpha"));
+        HyperParams.fromConfig(config, "oryx.als.hyperparams.alpha")));
+    if (logStrength) {
+      hyperParamValues.add(HyperParams.fromConfig(config, "oryx.als.hyperparams.epsilon"));
+    }
     noKnownItems = config.getBoolean("oryx.als.no-known-items");
     decayFactor = config.getDouble("oryx.als.decay.factor");
     decayZeroThreshold = config.getDouble("oryx.als.decay.zero-threshold");
@@ -105,14 +113,31 @@ public final class ALSUpdate extends MLUpdate<String> {
     int features = (Integer) hyperParameters.get(0);
     double lambda = (Double) hyperParameters.get(1);
     double alpha = (Double) hyperParameters.get(2);
+    double epsilon = Double.NaN;
+    if (logStrength) {
+      epsilon = (Double) hyperParameters.get(3);
+    }
     Preconditions.checkArgument(features > 0);
     Preconditions.checkArgument(lambda >= 0.0);
     Preconditions.checkArgument(alpha > 0.0);
+    if (logStrength) {
+      Preconditions.checkArgument(epsilon > 0.0);
+    }
 
     JavaRDD<String[]> parsedRDD = trainData.map(MLFunctions.PARSE_FN);
+    parsedRDD.cache();
 
-    JavaRDD<Rating> trainRatingData = parsedToRatingRDD(parsedRDD);
-    trainRatingData = aggregateScores(trainRatingData);
+    Map<String,Integer> userIDIndexMap = buildIDIndexMapping(parsedRDD, true);
+    Map<String,Integer> itemIDIndexMap = buildIDIndexMapping(parsedRDD, false);
+
+    log.info("Broadcasting ID-index mappings for {} users, {} items",
+             userIDIndexMap.size(), itemIDIndexMap.size());
+
+    Broadcast<Map<String,Integer>> bUserIDToIndex = sparkContext.broadcast(userIDIndexMap);
+    Broadcast<Map<String,Integer>> bItemIDToIndex = sparkContext.broadcast(itemIDIndexMap);
+
+    JavaRDD<Rating> trainRatingData = parsedToRatingRDD(parsedRDD, bUserIDToIndex, bItemIDToIndex);
+    trainRatingData = aggregateScores(trainRatingData, epsilon);
     ALS als = new ALS()
         .setRank(features)
         .setIterations(iterations)
@@ -121,36 +146,55 @@ public final class ALSUpdate extends MLUpdate<String> {
     if (implicit) {
       als = als.setImplicitPrefs(true).setAlpha(alpha);
     }
-    MatrixFactorizationModel model = als.run(trainRatingData.rdd());
 
-    Map<Integer,String> reverseIDLookup = parsedRDD.flatMapToPair(tokens -> {
-        List<Tuple2<Integer,String>> results = new ArrayList<>(2);
-        for (int i = 0; i < 2; i++) {
-          String s = tokens[i];
-          if (MOST_INTS_PATTERN.matcher(s).matches()) {
-            try {
-              Integer.parseInt(s);
-              continue;
-            } catch (NumberFormatException nfe) {
-              // continue
-            }
-          }
-          results.add(new Tuple2<>(hash(s), s));
-        }
-        return results;
-      }).reduceByKey((current, next) -> next).collectAsMap();
-    // Clone, due to some serialization problems with the result of collectAsMap?
-    reverseIDLookup = new HashMap<>(reverseIDLookup);
+    RDD<Rating> trainingRatingDataRDD = trainRatingData.rdd();
+    trainingRatingDataRDD.cache();
+    MatrixFactorizationModel model = als.run(trainingRatingDataRDD);
+    trainingRatingDataRDD.unpersist(false);
+
+    bUserIDToIndex.unpersist();
+    bItemIDToIndex.unpersist();
+
+    parsedRDD.unpersist();
+
+    Broadcast<Map<Integer,String>> bUserIndexToID = sparkContext.broadcast(invertMap(userIDIndexMap));
+    Broadcast<Map<Integer,String>> bItemIndexToID = sparkContext.broadcast(invertMap(itemIDIndexMap));
 
     PMML pmml = mfModelToPMML(model,
                               features,
                               lambda,
                               alpha,
+                              epsilon,
                               implicit,
+                              logStrength,
                               candidatePath,
-                              reverseIDLookup);
+                              bUserIndexToID,
+                              bItemIndexToID);
     unpersist(model);
+
+    bUserIndexToID.unpersist();
+    bItemIndexToID.unpersist();
+
     return pmml;
+  }
+
+  private static Map<String,Integer> buildIDIndexMapping(JavaRDD<String[]> parsedRDD,
+                                                         boolean user) {
+    int offset = user ? 0 : 1;
+    Map<String,Integer> reverseIDLookup = parsedRDD.map(tokens -> tokens[offset])
+        .distinct().sortBy(s -> s, true, parsedRDD.getNumPartitions())
+        .zipWithIndex().mapValues(Long::intValue)
+        .collectAsMap();
+    // Clone, due to some serialization problems with the result of collectAsMap?
+    return new HashMap<>(reverseIDLookup);
+  }
+
+  private static <K,V> Map<V,K> invertMap(Map<K,V> map) {
+    Map<V,K> inverse = new HashMap<>(map.size());
+    for (Map.Entry<K,V> entry : map.entrySet()) {
+      inverse.put(entry.getValue(), entry.getKey());
+    }
+    return inverse;
   }
 
   @Override
@@ -159,9 +203,31 @@ public final class ALSUpdate extends MLUpdate<String> {
                          Path modelParentPath,
                          JavaRDD<String> testData,
                          JavaRDD<String> trainData) {
-    JavaRDD<Rating> testRatingData = parsedToRatingRDD(testData.map(MLFunctions.PARSE_FN));
-    testRatingData = aggregateScores(testRatingData);
-    MatrixFactorizationModel mfModel = pmmlToMFModel(sparkContext, model, modelParentPath);
+
+    JavaRDD<String[]> parsedTestRDD = testData.map(MLFunctions.PARSE_FN);
+    parsedTestRDD.cache();
+
+    Map<String,Integer> userIDToIndex = buildIDIndexOneWayMap(model, parsedTestRDD, true);
+    Map<String,Integer> itemIDToIndex = buildIDIndexOneWayMap(model, parsedTestRDD, false);
+
+    log.info("Broadcasting ID-index mappings for {} users, {} items",
+             userIDToIndex.size(), itemIDToIndex.size());
+
+    Broadcast<Map<String,Integer>> bUserIDToIndex = sparkContext.broadcast(userIDToIndex);
+    Broadcast<Map<String,Integer>> bItemIDToIndex = sparkContext.broadcast(itemIDToIndex);
+
+    JavaRDD<Rating> testRatingData = parsedToRatingRDD(parsedTestRDD, bUserIDToIndex, bItemIDToIndex);
+    double epsilon = Double.NaN;
+    if (logStrength) {
+      epsilon = Double.parseDouble(AppPMMLUtils.getExtensionValue(model, "epsilon"));
+    }
+    testRatingData = aggregateScores(testRatingData, epsilon);
+
+    MatrixFactorizationModel mfModel =
+        pmmlToMFModel(sparkContext, model, modelParentPath, bUserIDToIndex, bItemIDToIndex);
+
+    parsedTestRDD.unpersist();
+
     double eval;
     if (implicit) {
       double auc = Evaluation.areaUnderCurve(sparkContext, mfModel, testRatingData);
@@ -173,7 +239,33 @@ public final class ALSUpdate extends MLUpdate<String> {
       eval = -rmse;
     }
     unpersist(mfModel);
+
+    bUserIDToIndex.unpersist();
+    bItemIDToIndex.unpersist();
+
     return eval;
+  }
+
+  private static Map<String,Integer> buildIDIndexOneWayMap(PMML model,
+                                                           JavaRDD<String[]> parsedTestRDD,
+                                                           boolean user) {
+    // Add to mapping everything from the model
+    List<String> ids = AppPMMLUtils.getExtensionContent(model, user ? "XIDs" : "YIDs");
+    Map<String,Integer> idIndex = new HashMap<>(ids.size());
+    int index = 0;
+    for (String id : ids) {
+      idIndex.put(id, index++);
+    }
+
+    // And from the test set, which may have a few more IDs
+    int offset = user ? 0 : 1;
+    for (String id : parsedTestRDD.map(tokens -> tokens[offset]).distinct().collect()) {
+      if (!idIndex.containsKey(id)) {
+        idIndex.put(id, index++);
+      }
+    }
+
+    return idIndex;
   }
 
   /**
@@ -198,31 +290,28 @@ public final class ALSUpdate extends MLUpdate<String> {
                                          JavaRDD<String> pastData,
                                          Path modelParentPath,
                                          TopicProducer<String, String> modelUpdateTopic) {
+    // Send item updates first, before users. That way, user-based endpoints like /recommend
+    // may take longer to not return 404, but when they do, the result will be more complete.
+    log.info("Sending item / Y data as model updates");
+    String yPathString = AppPMMLUtils.getExtensionValue(pmml, "Y");
+    JavaPairRDD<String,float[]> productRDD = readFeaturesRDD(sparkContext, new Path(modelParentPath, yPathString));
 
-    JavaRDD<String[]> allData =
-        (pastData == null ? newData : newData.union(pastData)).map(MLFunctions.PARSE_FN);
+    String updateBroker = modelUpdateTopic.getUpdateBroker();
+    String topic = modelUpdateTopic.getTopic();
+
+    // For now, there is no use in sending known users for each item
+    productRDD.foreachPartition(new EnqueueFeatureVecsFn("Y", updateBroker, topic));
 
     log.info("Sending user / X data as model updates");
     String xPathString = AppPMMLUtils.getExtensionValue(pmml, "X");
     JavaPairRDD<String,float[]> userRDD = readFeaturesRDD(sparkContext, new Path(modelParentPath, xPathString));
 
-    String updateBroker = modelUpdateTopic.getUpdateBroker();
-    String topic = modelUpdateTopic.getTopic();
-
-    // Send item updates first, before users. That way, user-based endpoints like /recommend
-    // may take longer to not return 404, but when they do, the result will be more complete.
-
-    log.info("Sending item / Y data as model updates");
-    String yPathString = AppPMMLUtils.getExtensionValue(pmml, "Y");
-    JavaPairRDD<String,float[]> productRDD = readFeaturesRDD(sparkContext, new Path(modelParentPath, yPathString));
-
-    // For now, there is no use in sending known users for each item
-    productRDD.foreachPartition(new EnqueueFeatureVecsFn("Y", updateBroker, topic));
-
     if (noKnownItems) {
       userRDD.foreachPartition(new EnqueueFeatureVecsFn("X", updateBroker, topic));
     } else {
       log.info("Sending known item data with model updates");
+      JavaRDD<String[]> allData =
+          (pastData == null ? newData : newData.union(pastData)).map(MLFunctions.PARSE_FN);
       JavaPairRDD<String,Collection<String>> knownItems = knownsRDD(allData, true);
       userRDD.join(knownItems).foreachPartition(
           new EnqueueFeatureVecsAndKnownItemsFn("X", updateBroker, topic));
@@ -257,13 +346,15 @@ public final class ALSUpdate extends MLUpdate<String> {
    * @param parsedRDD parsed input as {@code String[]}
    * @return {@link Rating}s ordered by timestamp
    */
-  private JavaRDD<Rating> parsedToRatingRDD(JavaRDD<String[]> parsedRDD) {
+  private JavaRDD<Rating> parsedToRatingRDD(JavaRDD<String[]> parsedRDD,
+                                            Broadcast<Map<String,Integer>> bUserIDToIndex,
+                                            Broadcast<Map<String,Integer>> bItemIDToIndex) {
     JavaPairRDD<Long,Rating> timestampRatingRDD = parsedRDD.mapToPair(tokens -> {
       try {
         return new Tuple2<>(
             Long.valueOf(tokens[3]),
-            new Rating(parseOrHashInt(tokens[0]),
-                       parseOrHashInt(tokens[1]),
+            new Rating(bUserIDToIndex.value().get(tokens[0]),
+                       bItemIDToIndex.value().get(tokens[1]),
                        // Empty value means 'delete'; propagate as NaN
                        tokens[2].isEmpty() ? Double.NaN : Double.parseDouble(tokens[2])));
       } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
@@ -298,38 +389,10 @@ public final class ALSUpdate extends MLUpdate<String> {
   }
 
   /**
-   * @param s string to hash
-   * @return top 32 bits of MD5 hash of UTF-8 encoding of the string,
-   *  with 0 top bit (so result is nonnegative)
-   */
-  private static int hash(String s) {
-    return HASH.hashString(s, StandardCharsets.UTF_8).asInt() & 0x7FFFFFFF;
-  }
-
-  /**
-   * @param s value to parse or hash as an {@link Integer}
-   * @return {@link Integer} value of argument if it parses as an {@link Integer}, or else
-   *  the hash according to {@link #hash(String)}
-   */
-  private static int parseOrHashInt(String s) {
-    // Optimization: matches all ints (and then some) and is cheaper than the frequent exceptions
-    // generated by trying to parse everything
-    if (MOST_INTS_PATTERN.matcher(s).matches()) {
-      // may or may not parseable as int
-      try {
-        return Integer.parseInt(s);
-      } catch (NumberFormatException nfe) {
-        // number a bit too large/small for an int, so hash anyway
-      }
-    }
-    return hash(s);
-  }
-
-  /**
    * Combines {@link Rating}s with the same user/item into one, with score as the sum of
    * all of the scores.
    */
-  private JavaRDD<Rating> aggregateScores(JavaRDD<Rating> original) {
+  private JavaRDD<Rating> aggregateScores(JavaRDD<Rating> original, double epsilon) {
     JavaPairRDD<Tuple2<Integer,Integer>,Double> tuples =
         original.mapToPair(rating -> new Tuple2<>(new Tuple2<>(rating.user(), rating.product()), rating.rating()));
 
@@ -343,13 +406,21 @@ public final class ALSUpdate extends MLUpdate<String> {
       aggregated = tuples.foldByKey(Double.NaN, (current, next) -> next);
     }
 
-    return aggregated
-        .filter(kv -> !Double.isNaN(kv._2()))
-        .map(userProductScore -> {
-          Tuple2<Integer,Integer> userProduct = userProductScore._1();
-          return new Rating(userProduct._1(), userProduct._2(), userProductScore._2());
-        });
-      }
+    JavaPairRDD<Tuple2<Integer,Integer>,Double> noNaN =
+        aggregated.filter(kv -> !Double.isNaN(kv._2()));
+
+    if (logStrength) {
+      return noNaN.map(userProductScore -> new Rating(
+          userProductScore._1()._1(),
+          userProductScore._1()._2(),
+          Math.log1p(userProductScore._2() / epsilon)));
+    } else {
+      return noNaN.map(userProductScore -> new Rating(
+          userProductScore._1()._1(),
+          userProductScore._1()._2(),
+          userProductScore._2()));
+    }
+  }
 
   /**
    * There is no actual serialization of a massive factored matrix model into PMML.
@@ -360,9 +431,12 @@ public final class ALSUpdate extends MLUpdate<String> {
                                     int features,
                                     double lambda,
                                     double alpha,
+                                    double epsilon,
                                     boolean implicit,
+                                    boolean logStrength,
                                     Path candidatePath,
-                                    Map<Integer,String> reverseIDMapping) {
+                                    Broadcast<Map<Integer,String>> bUserIndexToID,
+                                    Broadcast<Map<Integer,String>> bItemIndexToID) {
 
     Function<double[],float[]> doubleArrayToFloats = d -> {
       float[] f = new float[d.length];
@@ -377,8 +451,8 @@ public final class ALSUpdate extends MLUpdate<String> {
     JavaPairRDD<Integer,float[]> itemFeaturesRDD =
         massageToIntKey(model.productFeatures()).mapValues(doubleArrayToFloats);
 
-    saveFeaturesRDD(userFeaturesRDD, new Path(candidatePath, "X"), reverseIDMapping);
-    saveFeaturesRDD(itemFeaturesRDD, new Path(candidatePath, "Y"), reverseIDMapping);
+    saveFeaturesRDD(userFeaturesRDD, new Path(candidatePath, "X"), bUserIndexToID);
+    saveFeaturesRDD(itemFeaturesRDD, new Path(candidatePath, "Y"), bItemIndexToID);
 
     PMML pmml = PMMLUtils.buildSkeletonPMML();
     AppPMMLUtils.addExtension(pmml, "X", "X/");
@@ -389,8 +463,12 @@ public final class ALSUpdate extends MLUpdate<String> {
     if (implicit) {
       AppPMMLUtils.addExtension(pmml, "alpha", alpha);
     }
-    addIDsExtension(pmml, "XIDs", userFeaturesRDD, reverseIDMapping);
-    addIDsExtension(pmml, "YIDs", itemFeaturesRDD, reverseIDMapping);
+    AppPMMLUtils.addExtension(pmml, "logStrength", logStrength);
+    if (logStrength) {
+      AppPMMLUtils.addExtension(pmml, "epsilon", epsilon);
+    }
+    addIDsExtension(pmml, "XIDs", userFeaturesRDD, bUserIndexToID.value());
+    addIDsExtension(pmml, "YIDs", itemFeaturesRDD, bItemIndexToID.value());
     return pmml;
   }
 
@@ -404,43 +482,44 @@ public final class ALSUpdate extends MLUpdate<String> {
   private static void addIDsExtension(PMML pmml,
                                       String key,
                                       JavaPairRDD<Integer,?> features,
-                                      Map<Integer,String> reverseIDMapping) {
-    List<String> ids = features.keys().collect().stream().map(hashedID -> {
-      String originalID = reverseIDMapping.get(hashedID);
-      return originalID == null ? hashedID.toString() : originalID;
-    }).collect(Collectors.toList());
+                                      Map<Integer,String> indexToID) {
+    List<String> ids = features.keys().collect().stream().map(indexToID::get).collect(Collectors.toList());
     AppPMMLUtils.addExtensionContent(pmml, key, ids);
   }
 
   private static void saveFeaturesRDD(JavaPairRDD<Integer,float[]> features,
                                       Path path,
-                                      Map<Integer,String> reverseIDMapping) {
+                                      Broadcast<Map<Integer,String>> bIndexToID) {
     log.info("Saving features RDD to {}", path);
     features.map(keyAndVector -> {
-      Integer id = keyAndVector._1();
-      String originalKey = reverseIDMapping.get(id);
-      Object key = originalKey == null ? id : originalKey;
+      String id = bIndexToID.value().get(keyAndVector._1());
       float[] vector = keyAndVector._2();
-      return TextUtils.joinJSON(Arrays.asList(key, vector));
+      return TextUtils.joinJSON(Arrays.asList(id, vector));
     }).saveAsTextFile(path.toString(), GzipCodec.class);
   }
 
   private static MatrixFactorizationModel pmmlToMFModel(JavaSparkContext sparkContext,
                                                         PMML pmml,
-                                                        Path modelParentPath) {
+                                                        Path modelParentPath,
+                                                        Broadcast<Map<String,Integer>> bUserIDToIndex,
+                                                        Broadcast<Map<String,Integer>> bItemIDToIndex) {
     String xPathString = AppPMMLUtils.getExtensionValue(pmml, "X");
     String yPathString = AppPMMLUtils.getExtensionValue(pmml, "Y");
     JavaPairRDD<String,float[]> userRDD = readFeaturesRDD(sparkContext, new Path(modelParentPath, xPathString));
     JavaPairRDD<String,float[]> productRDD = readFeaturesRDD(sparkContext, new Path(modelParentPath, yPathString));
     int rank = userRDD.first()._2().length;
     return new MatrixFactorizationModel(
-        rank, readAndConvertFeatureRDD(userRDD), readAndConvertFeatureRDD(productRDD));
+        rank,
+        readAndConvertFeatureRDD(userRDD, bUserIDToIndex),
+        readAndConvertFeatureRDD(productRDD, bItemIDToIndex));
   }
 
-  private static RDD<Tuple2<Object,double[]>> readAndConvertFeatureRDD(JavaPairRDD<String,float[]> javaRDD) {
+  private static RDD<Tuple2<Object,double[]>> readAndConvertFeatureRDD(
+      JavaPairRDD<String,float[]> javaRDD,
+      Broadcast<Map<String,Integer>> bIdToIndex) {
 
     RDD<Tuple2<Integer,double[]>> scalaRDD = javaRDD.mapToPair(t ->
-        new Tuple2<>(parseOrHashInt(t._1()), t._2())
+        new Tuple2<>(bIdToIndex.value().get(t._1()), t._2())
     ).mapValues(f -> {
         double[] d = new double[f.length];
         for (int i = 0; i < d.length; i++) {
@@ -499,8 +578,8 @@ public final class ALSUpdate extends MLUpdate<String> {
 
   private static <K,V> JavaPairRDD<K,V> fromRDD(RDD<Tuple2<K,V>> rdd) {
     return JavaPairRDD.fromRDD(rdd,
-                               ClassTag$.MODULE$.<K>apply(Object.class),
-                               ClassTag$.MODULE$.<V>apply(Object.class));
+                               ClassTag$.MODULE$.apply(Object.class),
+                               ClassTag$.MODULE$.apply(Object.class));
   }
 
 }

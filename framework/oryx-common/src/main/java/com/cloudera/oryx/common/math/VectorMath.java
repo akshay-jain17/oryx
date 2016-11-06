@@ -17,8 +17,7 @@ package com.cloudera.oryx.common.math;
 
 import java.util.Collection;
 
-import org.apache.commons.math3.linear.Array2DRowRealMatrix;
-import org.apache.commons.math3.linear.RealMatrix;
+import com.github.fommil.netlib.BLAS;
 import org.apache.commons.math3.random.RandomGenerator;
 
 /**
@@ -26,20 +25,20 @@ import org.apache.commons.math3.random.RandomGenerator;
  */
 public final class VectorMath {
 
-  private VectorMath() {
-  }
+  private static final BLAS blas = BLAS.getInstance();
+
+  private VectorMath() {}
 
   /**
    * @return dot product of the two given arrays
    * @param x one array
    * @param y the other array
-   * @throws IllegalArgumentException if x and y are empty or of different length
    */
   public static double dot(float[] x, float[] y) {
     int length = x.length;
     double dot = 0.0;
     for (int i = 0; i < length; i++) {
-      dot += x[i] * y[i];
+      dot += (double) x[i] * y[i];
     }
     return dot;
   }
@@ -47,37 +46,65 @@ public final class VectorMath {
   /**
    * @param x vector for whom norm to be calculated
    * @return the L2 norm of vector x
-   * @throws IllegalArgumentException if x is of 0 length
    */
   public static double norm(float[] x) {
     double total = 0.0;
     for (float f : x) {
-      total += f * f;
+      total += (double) f * f;
     }
     return Math.sqrt(total);
   }
 
   /**
-   * @param M tall, skinny matrix
-   * @return MT * M as a dense matrix
+   * @param x vector for whom norm to be calculated
+   * @return the L2 norm of vector x
    */
-  public static RealMatrix transposeTimesSelf(Collection<float[]> M) {
+  public static double norm(double[] x) {
+    double total = 0.0;
+    for (double d : x) {
+      total += d * d;
+    }
+    return Math.sqrt(total);
+  }
+
+  /**
+   * Computes cosine similarity of values in two given arrays, when the norm of one array is
+   * known in advance, which is a not-uncommon case.
+   *
+   * @param x one array
+   * @param y the other array
+   * @param normY norm of y
+   * @return cosine similarity = dot(x,y) / (norm(x) * norm(y))
+   */
+  public static double cosineSimilarity(float[] x, float[] y, double normY) {
+    int length = x.length;
+    double dot = 0.0;
+    double totalXSq = 0.0;
+    for (int i = 0; i < length; i++) {
+      double xi = x[i];
+      totalXSq += xi * xi;
+      dot += xi * y[i];
+    }
+    return dot / (Math.sqrt(totalXSq) * normY);
+  }
+
+  /**
+   * @param M tall, skinny matrix
+   * @return MT * M as a dense lower-triangular matrix, represented in packed row-major form.
+   */
+  public static double[] transposeTimesSelf(Collection<float[]> M) {
     if (M == null || M.isEmpty()) {
       return null;
     }
-    int features = 0;
-    RealMatrix result = null;
+    int features = M.iterator().next().length;
+    double[] result = new double[features * (features + 1) / 2];
+    double[] vectorD = new double[features];
     for (float[] vector : M) {
-      if (result == null) {
-        features = vector.length;
-        result = new Array2DRowRealMatrix(features, features);
+      // Unfortunately need to copy into a double[]
+      for (int i = 0; i < vector.length; i++) {
+        vectorD[i] = vector[i];
       }
-      for (int row = 0; row < features; row++) {
-        float rowValue = vector[row];
-        for (int col = 0; col < features; col++) {
-          result.addToEntry(row, col, rowValue * vector[col]);
-        }
-      }
+      blas.dspr("L", features, 1.0, vectorD, 1, result);
     }
     return result;
   }

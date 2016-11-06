@@ -17,6 +17,7 @@ package com.cloudera.oryx.lambda.speed;
 
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.UUID;
 import java.util.stream.StreamSupport;
 
 import com.google.common.base.Preconditions;
@@ -29,6 +30,7 @@ import kafka.message.MessageAndMetadata;
 import kafka.serializer.Decoder;
 import kafka.serializer.StringDecoder;
 import kafka.utils.VerifiableProperties;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
@@ -98,18 +100,22 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
 
     streamingContext = buildStreamingContext();
     log.info("Creating message stream from topic");
-
-    JavaInputDStream<MessageAndMetadata<K,M>> dStream = buildInputDStream(streamingContext);
-
-    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(km -> new Tuple2<>(km.key(), km.message()));
+    JavaInputDStream<MessageAndMetadata<K,M>> kafkaDStream = buildInputDStream(streamingContext);
+    JavaPairDStream<K,M> pairDStream =
+        kafkaDStream.mapToPair(mAndM -> new Tuple2<>(mAndM.key(), mAndM.message()));
 
     consumer = Consumer.createJavaConsumerConnector(new ConsumerConfig(
         ConfigUtils.keyValueToProperties(
-            "group.id", "OryxGroup-" + getLayerName() + "-" + System.currentTimeMillis(),
+            "group.id", "OryxGroup-" + getLayerName() + "-" + UUID.randomUUID(),
             "zookeeper.connect", updateTopicLockMaster,
             "fetch.message.max.bytes", maxMessageSize,
             // Do start from the beginning of the update queue
-            "auto.offset.reset", "smallest"
+            "auto.offset.reset", "smallest" // becomes "earliest" in Kafka 0.9+
+            // Above are for Kafka 0.8; following are for 0.9+
+            //"bootstrap.servers", updateTopicBroker,
+            //"max.partition.fetch.bytes", maxMessageSize,
+            //"key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+            //"value.deserializer", updateDecoderClass.getName()
         )));
     KafkaStream<String,U> stream =
         consumer.createMessageStreams(Collections.singletonMap(updateTopic, 1),
@@ -120,9 +126,10 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
         .iterator();
 
     modelManager = loadManagerInstance();
+    Configuration hadoopConf = streamingContext.sparkContext().hadoopConfiguration();
     new Thread(LoggingCallable.log(() -> {
       try {
-        modelManager.consume(transformed, streamingContext.sparkContext().hadoopConfiguration());
+        modelManager.consume(transformed, hadoopConf);
       } catch (Throwable t) {
         log.error("Error while consuming updates", t);
         close();
@@ -131,14 +138,15 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
 
     pairDStream.foreachRDD(new SpeedLayerUpdate<>(modelManager, updateBroker, updateTopic));
 
-    dStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
+    // Must use the raw Kafka stream to get offsets
+    kafkaDStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
 
     log.info("Starting Spark Streaming");
 
     streamingContext.start();
   }
 
-  public void await() {
+  public void await() throws InterruptedException {
     Preconditions.checkState(streamingContext != null);
     log.info("Spark Streaming is running");
     streamingContext.awaitTermination();

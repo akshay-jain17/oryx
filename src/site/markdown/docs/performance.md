@@ -16,6 +16,32 @@ Since Kafka is the underlying data transport, the storage require to ingest and 
 just that of Kafka. See [Kafka performance](http://kafka.apache.org/performance.html) figures for information.
 In general, Kafka is not nearly a bottleneck and can be sized like any other usage of Kafka.
 
+# Native BLAS Acceleration
+
+Note that some parts of Spark and Oryx can use a native implementation of 
+[BLAS](http://www.netlib.org/blas/), a linear algebra library, to accelerate some operations. 
+This integration is enabled by a library called  [`netlib-java`](https://github.com/fommil/netlib-java). 
+
+Because some dependencies of `netlib-java` are licensed under an open source license that is 
+materially different from this project's license (GPL, instead of
+Apache License 2.0), this support is not built in to the Oryx distribution.
+
+It can be enabled however by building Oryx with the `-Pnetlib` flag. 
+
+If using a standard distribution of Oryx that's not built this way, it can also be enabled by
+building the support into your application. To do so, add this dependency to your application's
+`pom.xml` file, where `netlib.java.version` matches the one specified by Oryx and Spark:
+
+```XML
+<dependency>
+  <groupId>com.github.fommil.netlib</groupId>
+  <artifactId>all</artifactId>
+  <version>${netlib.java.version}</version>
+  <scope>runtime</scope>
+  <type>pom</type>
+</dependency>
+```
+
 # Batch Layer
 
 The Batch Layer's particular role is model building, and the element that is of most interest to benchmark
@@ -33,9 +59,8 @@ Choosing the number of Spark executors, cores and memory is a topic in its own r
 More executors means, naturally, more cores and memory. The number should not exceed the number of machines 
 in the cluster; it can be less. See `oryx.batch.streaming.num-executors`.
 
-More cores means potentially more parallel processing. It can usefully be up to 1/3 or 1/2of the total number of 
-tasks in a typical model building process. You can observe the number of tasks and thus inherent parallelism
-in the Spark UI of a Batch layer run. Beyond this count, more cores doesn't add much parallelism. Fewer is OK 
+More cores means potentially more parallel processing. You can observe the number of tasks and thus inherent parallelism
+in the Spark UI of a Batch layer run. Beyond this count, more cores doesn't add parallelism. Fewer is OK 
 and simply increases the run time. Of course, enough cores should be available to get the batch process completed 
 comfortably within the batch interval. The number of cores is configured by 
 `oryx.batch.streaming.executor-cores`.
@@ -79,7 +104,7 @@ mvn -Pbenchmark \
 ### Memory
 
 - Memory requirements scale linearly with (users + items) x features
-- `-XX:+UseStringDeduplication` helps a lot (reflected below)
+- GC settings like `-XX:+UseStringDeduplication` help a lot (reflected below)
 - At scale, 1M users or items ~= 500-1000M of heap required, depending on features
 
 Example steady-state heap usage:
@@ -101,7 +126,7 @@ Example steady-state heap usage:
 - Locality sensitive hashing decreases processing time roughly linearly; 0.33 ~= 1/0.33 ~= 3x faster (setting too low adversely affects result quality)
 
 Below are representative throughput / latency measurements for the `/recommend` endpoint using  
-a 32-core Intel Xeon 2.3GHz (Haswell), OpenJDK 8 and flags `-XX:+UseG1GC -XX:+UseStringDeduplication`. 
+a 32-core Intel Xeon 2.3GHz (Haswell), OpenJDK 8 and flags `-XX:+UseG1GC -XX:NewRatio=9 -XX:+UseStringDeduplication`. 
 Heap size was comfortably large enough for the data set in each case. 
 The tests were run with 1-3 concurrent request at a time, as necessary to achieve near-full CPU utilization.
 
@@ -110,22 +135,22 @@ The tests were run with 1-3 concurrent request at a time, as necessary to achiev
 | Features | Items (M) | Throughput (qps) | Latency (ms) |
 | --------:| ---------:| ----------------:| ------------:|
 |  50      |  1        | 437              |    7         |
-| 250      |  1        | 151              |   13         |
-|  50      |  5        |  84              |   24         |
-| 250      |  5        |  36              |   56         |
-|  50      | 20        |  14              |   69         |
-| 250      | 20        |   6              |  162         |
+| 250      |  1        | 160              |   12         |
+|  50      |  5        |  91              |   21         |
+| 250      |  5        |  37              |   54         |
+|  50      | 20        |  25              |   79         |
+| 250      | 20        |   7              |  134         |
 
 *Without LSH (sample rate = 1.0)*
 
 | Features | Items (M) | Throughput (qps) | Latency (ms) |
 | --------:| ---------:| ----------------:| ------------:|
-|  50      |  1        |  74              |   27         |
-| 250      |  1        |  23              |   44         |
-|  50      |  5        |  13              |   80         |
-| 250      |  5        |   5              |  191         |
-|  50      | 20        |   4              |  282         |
-| 250      | 20        |   1              |  708         |
+|  50      |  1        |  70              |   28         |
+| 250      |  1        |  24              |   40         |
+|  50      |  5        |  16              |   57         |
+| 250      |  5        |   6              |  181         |
+|  50      | 20        |   4              |  257         |
+| 250      | 20        |   1              |  668         |
 
 ## JVM Tuning
 
@@ -137,6 +162,8 @@ Memory requirements are dominated by the need to load a model in memory. For lar
 may mean ensuring that the Serving layer memory setting is comfortably high enough to hold the model without
 GC thrashing. See `oryx.serving.memory`.
 
+`-XX:NewRatio=9` (or values thereabout) devote much more of the heap to storing long-lived objects that 
+don't need garbage collection much. This is true of serving layers holding mostly large, long-lived data structures.
 `-XX:+UseG1GC` remains a good garbage collection setting to supply with `--jvm-args`.  
 `-XX:+UseStringDeduplication` can reduce memory requirements by about 20%.
 

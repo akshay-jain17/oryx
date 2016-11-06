@@ -18,7 +18,7 @@
 
   <groupId>com.cloudera.oryx</groupId>
   <artifactId>oryx</artifactId>
-  <version>2.2.0-SNAPSHOT</version>
+  <version>2.3.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <dependencyManagement>
@@ -166,7 +166,7 @@
       </dependency>
       <dependency>
         <groupId>org.apache.spark</groupId>
-        <artifactId>spark-streaming-kafka_${scala.minor.version}</artifactId>
+        <artifactId>spark-streaming-kafka-0-8_${scala.minor.version}</artifactId>
         <version>${spark.version}</version>
         <scope>provided</scope>
       </dependency>
@@ -208,11 +208,29 @@
         <artifactId>scala-compiler</artifactId>
         <version>${scala.complete.version}</version>
       </dependency>
+      <dependency>
+        <groupId>org.scala-lang</groupId>
+        <artifactId>scala-reflect</artifactId>
+        <version>${scala.complete.version}</version>
+      </dependency>
 
       <dependency>
         <groupId>com.typesafe</groupId>
         <artifactId>config</artifactId>
-        <version>${typesafe.config.version}</version>
+        <version>1.3.1</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.github.fommil.netlib</groupId>
+        <artifactId>core</artifactId>
+        <version>${netlib.java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.fommil.netlib</groupId>
+        <artifactId>all</artifactId>
+        <version>${netlib.java.version}</version>
+        <scope>runtime</scope>
+        <type>pom</type>
       </dependency>
 
       <dependency>
@@ -224,7 +242,7 @@
       <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-csv</artifactId>
-        <version>1.2</version>
+        <version>1.4</version>
       </dependency>
 
       <dependency>
@@ -264,40 +282,36 @@
       </dependency>
 
       <dependency>
-        <groupId>org.jpmml</groupId>
-        <artifactId>pmml-model</artifactId>
-        <version>1.2.13</version>
+        <groupId>javax.xml.bind</groupId>
+        <artifactId>jaxb-api</artifactId>
+        <version>2.2.12</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.persistence</groupId>
+        <artifactId>org.eclipse.persistence.moxy</artifactId>
+        <version>2.6.4</version>
+        <scope>runtime</scope>
         <exclusions>
-          <!-- Not needed in Java 7+ -->
           <exclusion>
-            <groupId>org.glassfish.jaxb</groupId>
-            <artifactId>jaxb-core</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>org.glassfish.jaxb</groupId>
-            <artifactId>jaxb-runtime</artifactId>
+            <groupId>org.glassfish</groupId>
+            <artifactId>javax.json</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
 
       <dependency>
-        <groupId>net.openhft</groupId>
-        <artifactId>koloboke-api-jdk6-7</artifactId>
-        <version>${koloboke.version}</version>
+        <groupId>org.jpmml</groupId>
+        <artifactId>pmml-model</artifactId>
+        <version>1.3.4</version>
       </dependency>
+
       <dependency>
-        <groupId>net.openhft</groupId>
-        <artifactId>koloboke-impl-jdk6-7</artifactId>
-        <version>${koloboke.version}</version>
-        <scope>runtime</scope>
-      </dependency>
-      <dependency>
-        <groupId>net.openhft</groupId>
+        <groupId>com.koloboke</groupId>
         <artifactId>koloboke-api-jdk8</artifactId>
         <version>${koloboke.version}</version>
       </dependency>
       <dependency>
-        <groupId>net.openhft</groupId>
+        <groupId>com.koloboke</groupId>
         <artifactId>koloboke-impl-jdk8</artifactId>
         <version>${koloboke.version}</version>
         <scope>runtime</scope>
@@ -318,7 +332,12 @@
       <dependency>
         <groupId>javax.annotation</groupId>
         <artifactId>javax.annotation-api</artifactId>
-        <version>1.2</version>
+        <version>1.3</version>
+      </dependency>
+      <dependency>
+        <groupId>javax.security.auth.message</groupId>
+        <artifactId>javax.security.auth.message-api</artifactId>
+        <version>1.1</version>
       </dependency>
       <dependency>
         <groupId>org.apache.tomcat</groupId>
@@ -362,7 +381,13 @@
       <dependency>
         <groupId>commons-fileupload</groupId>
         <artifactId>commons-fileupload</artifactId>
-        <version>1.3.1</version>
+        <version>1.3.2</version>
+      </dependency>
+      <!-- Managed up for harmonization with Hadoop; used by fileupload -->
+      <dependency>
+        <groupId>commons-io</groupId>
+        <artifactId>commons-io</artifactId>
+        <version>2.5</version>
       </dependency>
       <dependency>
         <groupId>org.glassfish.jersey.core</groupId>
@@ -419,7 +444,7 @@
       <dependency>
         <groupId>org.springframework</groupId>
         <artifactId>spring-test</artifactId>
-        <version>4.2.5.RELEASE</version>
+        <version>4.3.3.RELEASE</version>
         <scope>test</scope>
         <exclusions>
           <exclusion>
@@ -507,20 +532,21 @@
     <!-- Dependency versions -->
     <java.version>1.8</java.version>
     <!-- Match this with what Spark version wants -->
-    <scala.minor.version>2.10</scala.minor.version>
-    <scala.complete.version>${scala.minor.version}.5</scala.complete.version>
-    <hadoop.version>2.6.0</hadoop.version>
-    <jackson.version>2.4.5</jackson.version>
-    <jersey.version>2.22.2</jersey.version>
+    <scala.minor.version>2.11</scala.minor.version>
+    <scala.complete.version>${scala.minor.version}.8</scala.complete.version>
+    <hadoop.version>2.7.3</hadoop.version>
+    <jackson.version>2.8.3</jackson.version>
+    <javadoc.plugin.version>2.10.4</javadoc.plugin.version>
+    <jersey.version>2.24</jersey.version>
     <kafka.version>0.9.0.1</kafka.version>
-    <koloboke.version>0.6.8</koloboke.version>
-    <slf4j.version>1.7.20</slf4j.version>
-    <snappy.version>1.1.2.1</snappy.version>
-    <spark.version>1.6.1</spark.version>
+    <koloboke.version>1.0.0</koloboke.version>
+    <netlib.java.version>1.1.2</netlib.java.version>
+    <slf4j.version>1.7.21</slf4j.version>
+    <snappy.version>1.1.2.6</snappy.version>
+    <spark.version>2.0.1</spark.version>
     <surefire.version>2.19.1</surefire.version>
-    <tomcat.version>8.0.33</tomcat.version>
-    <typesafe.config.version>1.3.0</typesafe.config.version>
-    <zookeeper.version>3.4.6</zookeeper.version>
+    <tomcat.version>8.5.6</tomcat.version>
+    <zookeeper.version>3.4.8</zookeeper.version>
   </properties>
 
   <build>
@@ -593,7 +619,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
-          <version>3.5.1</version>
+          <version>3.6.0</version>
           <configuration>
             <optimize>true</optimize>
             <showDeprecation>true</showDeprecation>
@@ -614,12 +640,12 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-source-plugin</artifactId>
-          <version>2.4</version>
+          <version>3.0.1</version>
           <executions>
             <execution>
               <id>attach-sources</id>
               <goals>
-                <goal>jar</goal>
+                <goal>jar-no-fork</goal>
               </goals>
             </execution>
           </executions>
@@ -627,63 +653,11 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-javadoc-plugin</artifactId>
-          <version>2.10.3</version>
+          <version>${javadoc.plugin.version}</version>
           <configuration>
             <javadocVersion>${java.version}</javadocVersion>
-            <groups>
-              <group>
-                <title>Batch Layer</title>
-                <packages>com.cloudera.oryx.batch*</packages>
-              </group>
-              <group>
-                <title>Speed Layer</title>
-                <packages>com.cloudera.oryx.speed*</packages>
-              </group>
-              <group>
-                <title>Serving Layer</title>
-                <packages>com.cloudera.oryx.serving*</packages>
-              </group>
-              <group>
-                <title>Lambda Tier</title>
-                <packages>com.cloudera.oryx.lambda*</packages>
-              </group>
-              <group>
-                <title>ML Tier</title>
-                <packages>com.cloudera.oryx.ml*</packages>
-              </group>
-              <group>
-                <title>App API</title>
-                <packages>com.cloudera.oryx.api*</packages>
-              </group>
-              <group>
-                <title>App Tier: Batch</title>
-                <packages>com.cloudera.oryx.app*</packages>
-              </group>
-              <group>
-                <title>App Tier: Speed</title>
-                <packages>com.cloudera.oryx.app.speed*</packages>
-              </group>
-              <group>
-                <title>App Tier: Serving</title>
-                <packages>com.cloudera.oryx.app.serving*</packages>
-              </group>
-              <group>
-                <title>Common</title>
-                <packages>com.cloudera.oryx.common*</packages>
-              </group>
-              <group>
-                <title>Example App</title>
-                <packages>com.cloudera.oryx.example*</packages>
-              </group>
-              <group>
-                <title>Kafka Utilities</title>
-                <packages>com.cloudera.oryx.kafka*</packages>
-              </group>
-              <group>
-                <title>Zookeeper Utilities</title>
-                <packages>com.cloudera.oryx.zk*</packages>
-              </group>
-            </groups>
+            <quiet>true</quiet>
+            <notimestamp>true</notimestamp>
           </configuration>
           <executions>
             <execution>
@@ -702,7 +676,7 @@
             <dependency>
               <groupId>org.apache.maven.scm</groupId>
               <artifactId>maven-scm-provider-gitexe</artifactId>
-              <version>1.9.4</version>
+              <version>1.9.5</version>
             </dependency>
           </dependencies>
           <configuration>
@@ -776,7 +750,7 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-resources-plugin</artifactId>
-          <version>2.7</version>
+          <version>3.0.1</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
@@ -786,12 +760,13 @@
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-scm-plugin</artifactId>
-          <version>1.9.4</version>
+          <version>1.9.5</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-site-plugin</artifactId>
-          <version>3.5</version>
+          <!-- site-plugin >= 3.5 is incompatible with most skins -->
+          <version>3.4</version>
           <inherited>false</inherited>
           <dependencies>
             <dependency>
@@ -814,18 +789,13 @@
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-project-info-reports-plugin</artifactId>
-          <version>2.9</version>
-        </plugin>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-dependency-plugin</artifactId>
           <version>2.10</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-jar-plugin</artifactId>
-          <version>2.6</version>
+          <version>3.0.2</version>
           <configuration>
             <skipIfEmpty>true</skipIfEmpty>
           </configuration>
@@ -858,6 +828,17 @@
                       <exclude>META-INF/*.RSA</exclude>
                     </excludes>
                   </filter>
+                  <!-- Exclude a large number of irrelevant Koloboke impls -->
+                  <filter>
+                    <artifact>com.koloboke:*</artifact>
+                    <excludes>
+                      <exclude>com/koloboke/collect/**/*Byte*.class</exclude>
+                      <exclude>com/koloboke/collect/**/*Double*.class</exclude>
+                      <exclude>com/koloboke/collect/**/*Float*.class</exclude>
+                      <exclude>com/koloboke/collect/**/*Short*.class</exclude>
+                      <!-- Keep Int, Long, Obj because some are used; Char is hard to exclude by name -->
+                    </excludes>
+                  </filter>
                 </filters>
                 <!-- Conflicts with JPMML 1.1.x in Spark, so shade -->
                 <relocations>
@@ -876,6 +857,14 @@
                     </includes>
                   </relocation>
                 </relocations>
+                <transformers>
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer" />
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer" />
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                  <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                    <resource>reference.conf</resource>
+                  </transformer>
+                </transformers>
               </configuration>
             </execution>
           </executions>
@@ -900,7 +889,7 @@
         <plugin>
           <groupId>org.apache.rat</groupId>
           <artifactId>apache-rat-plugin</artifactId>
-          <version>0.11</version>
+          <version>0.12</version>
           <configuration>
             <excludes>
               <exclude>**/*.settings/</exclude>
@@ -919,6 +908,7 @@
               <exclude>**/dependency-reduced-pom.xml</exclude>
               <exclude>.travis.yml</exclude>
               <exclude>cov-int/**</exclude>
+              <exclude>docs/</exclude>
             </excludes>
           </configuration>
           <executions>
@@ -929,30 +919,16 @@
               </goals>
             </execution>
           </executions>
-          <!-- workaround for Xerces warnings -->
-          <dependencies>
-            <dependency>
-              <groupId>org.apache.maven.doxia</groupId>
-              <artifactId>doxia-core</artifactId>
-              <version>1.6</version>
-              <exclusions>
-                <exclusion>
-                  <groupId>xerces</groupId>
-                  <artifactId>xercesImpl</artifactId>
-                </exclusion>
-              </exclusions>
-            </dependency>
-          </dependencies>
         </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>versions-maven-plugin</artifactId>
-          <version>2.2</version>
+          <version>2.3</version>
         </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>clirr-maven-plugin</artifactId>
-          <version>2.7</version>
+          <version>2.8</version>
           <executions>
             <execution>
               <id>check-api</id>
@@ -966,7 +942,7 @@
         <plugin>
           <groupId>org.jacoco</groupId>
           <artifactId>jacoco-maven-plugin</artifactId>
-          <version>0.7.6.201602180812</version>
+          <version>0.7.7.201606060606</version>
           <executions>
             <execution>
               <id>jacoco-prepare-agent</id>
@@ -1004,18 +980,6 @@
           </executions>
         </plugin>
         <plugin>
-          <groupId>org.codehaus.mojo</groupId>
-          <artifactId>findbugs-maven-plugin</artifactId>
-          <version>3.0.3</version>
-          <configuration>
-            <threshold>Normal</threshold>
-            <effort>Max</effort>
-            <xmlOutput>true</xmlOutput>
-            <xmlOutputDirectory>target/site</xmlOutputDirectory>
-            <excludeFilterFile>src/findbugs/excludes.xml</excludeFilterFile>
-          </configuration>
-        </plugin>
-        <plugin>
           <groupId>net.alchim31.maven</groupId>
           <artifactId>scala-maven-plugin</artifactId>
           <version>3.2.2</version>
@@ -1041,45 +1005,73 @@
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-project-info-reports-plugin</artifactId>
-        <configuration>
-          <skip>true</skip> <!-- Disabled -->
-        </configuration>
-        <reportSets>
-          <reportSet>
-            <reports>
-              <!-- <report>cim</report> -->
-              <!-- <report>dependencies</report> -->
-              <report>dependency-convergence</report>
-              <report>dependency-info</report>
-              <report>dependency-management</report>
-              <report>distribution-management</report>
-              <report>index</report>
-              <report>issue-tracking</report>
-              <report>license</report>
-              <report>mailing-list</report>
-              <!-- <report>modules</report> -->
-              <!-- <report>plugin-management</report> -->
-              <!-- <report>plugins</report> -->
-              <!-- <report>project-team</report> -->
-              <report>scm</report>
-              <report>summary</report>
-            </reports>
-          </reportSet>
-        </reportSets>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
+        <inherited>false</inherited>
         <reportSets>
           <reportSet>
             <id>aggregate</id>
+            <inherited>false</inherited>
             <reports>
               <report>aggregate</report>
-              <report>test-aggregate</report>
             </reports>
           </reportSet>
         </reportSets>
+        <configuration>
+          <groups>
+            <group>
+              <title>App API</title>
+              <packages>com.cloudera.oryx.api*</packages>
+            </group>
+            <group>
+              <title>Example App</title>
+              <packages>com.cloudera.oryx.example*</packages>
+            </group>
+            <group>
+              <title>Lambda Tier</title>
+              <packages>com.cloudera.oryx.lambda*</packages>
+            </group>
+            <group>
+              <title>ML Tier</title>
+              <packages>com.cloudera.oryx.ml*</packages>
+            </group>
+            <group>
+              <title>App Tier: Batch</title>
+              <packages>com.cloudera.oryx.app*</packages>
+            </group>
+            <group>
+              <title>App Tier: Speed</title>
+              <packages>com.cloudera.oryx.app.speed*</packages>
+            </group>
+            <group>
+              <title>App Tier: Serving</title>
+              <packages>com.cloudera.oryx.app.serving*</packages>
+            </group>
+            <group>
+              <title>Batch Layer</title>
+              <packages>com.cloudera.oryx.batch*</packages>
+            </group>
+            <group>
+              <title>Speed Layer</title>
+              <packages>com.cloudera.oryx.speed*</packages>
+            </group>
+            <group>
+              <title>Serving Layer</title>
+              <packages>com.cloudera.oryx.serving*</packages>
+            </group>
+            <group>
+              <title>Common</title>
+              <packages>com.cloudera.oryx.common*</packages>
+            </group>
+            <group>
+              <title>Kafka Utilities</title>
+              <packages>com.cloudera.oryx.kafka*</packages>
+            </group>
+            <group>
+              <title>Zookeeper Utilities</title>
+              <packages>com.cloudera.oryx.zk*</packages>
+            </group>
+          </groups>
+        </configuration>
       </plugin>
     </plugins>
     <excludeDefaults>true</excludeDefaults>
@@ -1097,7 +1089,7 @@
   <licenses>
     <license>
       <name>The Apache Software License, Version 2.0</name>
-      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
       <distribution>repo</distribution>
     </license>
   </licenses>
@@ -1125,7 +1117,7 @@
     </mailingList>
     <mailingList>
       <name>StackOverflow tag</name>
-      <archive>http://stackoverflow.com/questions/tagged/oryx</archive>
+      <archive>https://stackoverflow.com/questions/tagged/oryx</archive>
     </mailingList>
     <mailingList>
       <name>Cloudera Community: Data Science and Machine Learning</name>
@@ -1134,8 +1126,8 @@
   </mailingLists>
   <scm>
     <connection>scm:git:https://github.com/OryxProject/oryx.git</connection>
-    <url>scm:git:https://github.com/OryxProject/oryx.git</url>
     <developerConnection>scm:git:https://github.com/OryxProject/oryx.git</developerConnection>
+    <url>https://github.com/OryxProject/oryx</url>
     <tag>HEAD</tag>
   </scm>
 
@@ -1145,17 +1137,19 @@
 
   <distributionManagement>
     <repository>
-      <id>oryx.repo</id>
-      <url>https://repository.cloudera.com/artifactory/libs-release-local</url>
+      <id>sonatype-nexus-staging</id>
+      <name>Nexus Release Repository</name>
+      <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
     </repository>
     <snapshotRepository>
-      <id>oryx.snapshots.repo</id>
-      <url>https://repository.cloudera.com/artifactory/libs-snapshot-local</url>
+      <id>sonatype-nexus-snapshots</id>
+      <name>Sonatype Nexus Snapshots</name>
+      <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
     </snapshotRepository>
     <site>
       <id>oryx.website</id>
       <name>Oryx documentation</name>
-      <url>http://oryx.io/</url>
+      <url>file:docs/</url>
     </site>
   </distributionManagement>
 
@@ -1168,24 +1162,16 @@
 
   <profiles>
     <profile>
-      <id>cdh57</id>
+      <id>cdh59</id>
       <activation>
-        <!-- for now, this must be active since Spark 1.6 does not work otherwise with Kafka 0.9 -->
         <activeByDefault>true</activeByDefault>
       </activation>
       <properties>
-        <cdh.version>5.7.0</cdh.version>
+        <cdh.version>5.9.0</cdh.version>
         <hadoop.version>2.6.0-cdh${cdh.version}</hadoop.version>
-        <spark.version>1.6.0-cdh${cdh.version}</spark.version>
+        <spark.version>2.0.0.cloudera.beta1</spark.version>
         <zookeeper.version>3.4.5-cdh${cdh.version}</zookeeper.version>
-        <kafka.version>0.9.0-kafka-2.0.0</kafka.version>
-      </properties>
-    </profile>
-    <profile>
-      <id>scala-2.11</id>
-      <properties>
-        <scala.minor.version>2.11</scala.minor.version>
-        <scala.complete.version>${scala.minor.version}.8</scala.complete.version>
+        <kafka.version>0.9.0-kafka-2.0.2</kafka.version>
       </properties>
     </profile>
     <profile>
@@ -1218,6 +1204,10 @@
     </profile>
     <profile>
       <id>travis</id>
+      <properties>
+        <!-- dummy to make @{argLine} evaluate when not set by jacoco -->
+        <argLine/>
+      </properties>
       <build>
         <plugins>
           <plugin>
@@ -1225,7 +1215,7 @@
             <artifactId>maven-surefire-plugin</artifactId>
             <configuration>
               <!-- Limit memory for unit tests in Travis -->
-              <argLine>-Xmx512m</argLine>
+              <argLine>@{argLine} -Xmx512m</argLine>
             </configuration>
           </plugin>
           <plugin>
@@ -1233,7 +1223,21 @@
             <artifactId>maven-failsafe-plugin</artifactId>
             <configuration>
               <!-- Limit memory for integration tests in Travis -->
-              <argLine>-Xmx1536m</argLine>
+              <argLine>@{argLine} -Xmx1536m</argLine>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <configuration>
+              <skipSource>true</skipSource>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <configuration>
+              <skip>true</skip>
             </configuration>
           </plugin>
         </plugins>

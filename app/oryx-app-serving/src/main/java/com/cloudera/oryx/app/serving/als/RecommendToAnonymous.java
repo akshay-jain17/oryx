@@ -31,7 +31,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.PathSegment;
 
-import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
+import com.koloboke.function.ObjDoubleToDoubleFunction;
 
 import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
@@ -68,8 +68,7 @@ public final class RecommendToAnonymous extends AbstractALSResource {
       @QueryParam("rescorerParams") List<String> rescorerParams) throws OryxServingException {
 
     check(!pathSegments.isEmpty(), "Need at least 1 item to make recommendations");
-    check(howMany > 0, "howMany must be positive");
-    check(offset >= 0, "offset must be nonnegative");
+    int howManyOffset = checkHowManyOffset(howMany, offset);
 
     ALSServingModel model = getALSServingModel();
     List<Pair<String,Double>> parsedPathSegments = EstimateForAnonymous.parsePathSegments(pathSegments);
@@ -94,7 +93,7 @@ public final class RecommendToAnonymous extends AbstractALSResource {
     Stream<Pair<String,Double>> topIDDots = model.topN(
         new DotsFunction(anonymousUserFeatures),
         rescoreFn,
-        howMany + offset,
+        howManyOffset,
         allowedFn);
     return toIDValueResponse(topIDDots, howMany, offset);
   }

@@ -23,8 +23,6 @@ import java.util.Map;
 import com.cloudera.oryx.common.OryxTest;
 import com.cloudera.oryx.common.random.RandomManager;
 
-import org.apache.commons.math3.linear.Array2DRowRealMatrix;
-import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.random.RandomGenerator;
 import org.junit.Test;
 
@@ -35,6 +33,8 @@ public final class VectorMathTest extends OryxTest {
 
   private static final float[] VEC1 = { 1.0f, 0.5f, -3.5f };
   private static final float[] VEC2 = { 0.0f, -10.3f, -3.0f };
+  private static final double[] VEC1D = { 1.0, 0.5, -3.5 };
+  private static final double[] VEC2D = { 0.0, -10.3, -3.0 };
 
   @Test
   public void testDotFF() {
@@ -62,28 +62,38 @@ public final class VectorMathTest extends OryxTest {
   }
 
   @Test
+  public void testNormD() {
+    assertEquals(0.0, VectorMath.norm(new double[] {0.0}), DOUBLE_EPSILON);
+    assertEquals(3.674234614174767, VectorMath.norm(VEC1D), DOUBLE_EPSILON);
+    assertEquals(10.72800074571213, VectorMath.norm(VEC2D), DOUBLE_EPSILON);
+  }
+
+  @Test
+  public void testCosineSimilarity() {
+    assertEquals(0.13572757431921362, VectorMath.cosineSimilarity(VEC1, VEC2, VectorMath.norm(VEC2)));
+    assertEquals(1.0, VectorMath.cosineSimilarity(VEC1, VEC1, VectorMath.norm(VEC1)));
+    float[] bigVec = new float[1000];
+    Arrays.fill(bigVec, 3.1415926535e20f);
+    float[] smallVec = new float[1000];
+    Arrays.fill(smallVec, -3.1415926535e-20f);
+    assertEquals(-1.0, VectorMath.cosineSimilarity(bigVec, smallVec, VectorMath.norm(smallVec)));
+  }
+
+  @Test
   public void testTransposeTimesSelf() {
     Map<Integer,float[]> a = new HashMap<>();
     a.put(-1, new float[] {1.3f, -2.0f, 3.0f});
     a.put(1, new float[] {2.0f, 0.0f, 5.0f});
     a.put(3, new float[] {0.0f, -1.5f, 5.5f});
-    RealMatrix ata = VectorMath.transposeTimesSelf(a.values());
-    RealMatrix expected = new Array2DRowRealMatrix(new double[][] {
-        {5.69, -2.6, 13.9},
-        {-2.6, 6.25, -14.25},
-        {13.9, -14.25, 64.25}
-    });
-    for (int row = 0; row < 3; row++) {
-      for (int col = 0; col < 3; col++) {
-        assertEquals(expected.getEntry(row, col), ata.getEntry(row, col), FLOAT_EPSILON);
-      }
-    }
+    double[] ata = VectorMath.transposeTimesSelf(a.values());
+    double[] expected = {5.69, -2.6, 13.9, 6.25, -14.25, 64.25};
+    assertArrayEquals(expected, ata, FLOAT_EPSILON);
   }
 
   @Test
   public void testNullTranspose() {
     assertNull(VectorMath.transposeTimesSelf(null));
-    assertNull(VectorMath.transposeTimesSelf(Collections.<float[]>emptyList()));
+    assertNull(VectorMath.transposeTimesSelf(Collections.emptyList()));
   }
 
   @Test

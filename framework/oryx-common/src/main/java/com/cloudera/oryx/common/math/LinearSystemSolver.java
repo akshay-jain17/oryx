@@ -15,8 +15,8 @@
 
 package com.cloudera.oryx.common.math;
 
+import org.apache.commons.math3.linear.Array2DRowRealMatrix;
 import org.apache.commons.math3.linear.DecompositionSolver;
-import org.apache.commons.math3.linear.QRDecomposition;
 import org.apache.commons.math3.linear.RRQRDecomposition;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.slf4j.Logger;
@@ -32,10 +32,35 @@ public final class LinearSystemSolver {
 
   private LinearSystemSolver() {}
 
-  public static Solver getSolver(RealMatrix M) {
-    if (M == null) {
+  /**
+   * @param packed dense lower-triangular matrix A, represented in BLAS packed column-major form
+   * @return solver for the system Ax = b
+   */
+  public static Solver getSolver(double[] packed) {
+    if (packed == null) {
       return null;
     }
+    int dim = (int) Math.round((Math.sqrt(8.0 * packed.length + 1.0) - 1.0) / 2.0);
+    double[][] unpacked = new double[dim][dim];
+    int offset = 0;
+    for (int col = 0; col < dim; col++) {
+      double[] unpackedCol = unpacked[col];
+      for (int row = col; row < dim; row++) {
+        unpacked[row][col] = unpackedCol[row] = packed[offset++];
+      }
+    }
+    return getSolver(unpacked);
+  }
+
+  /**
+   * @param data dense matrix represented in row-major form
+   * @return solver for the system Ax = b
+   */
+  static Solver getSolver(double[][] data) {
+    if (data == null) {
+      return null;
+    }
+    RealMatrix M = new Array2DRowRealMatrix(data, false);
     double infNorm = M.getNorm();
     double singularityThreshold = infNorm * SINGULARITY_THRESHOLD_RATIO;
     RRQRDecomposition decomposition = new RRQRDecomposition(M, singularityThreshold);
@@ -52,14 +77,6 @@ public final class LinearSystemSolver {
              singularityThreshold,
              apparentRank);
     throw new SingularMatrixSolverException(apparentRank, "Apparent rank: " + apparentRank);
-  }  
-
-  public static boolean isNonSingular(RealMatrix M) {
-    double infNorm = M.getNorm();
-    double singularityThreshold = infNorm * SINGULARITY_THRESHOLD_RATIO;
-    QRDecomposition decomposition = new RRQRDecomposition(M, singularityThreshold);
-    DecompositionSolver solver = decomposition.getSolver();
-    return solver.isNonSingular();
-  }  
+  }
 
 }

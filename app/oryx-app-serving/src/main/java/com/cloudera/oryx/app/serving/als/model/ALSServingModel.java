@@ -21,35 +21,34 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import net.openhft.koloboke.collect.map.ObjIntMap;
-import net.openhft.koloboke.collect.map.ObjObjMap;
-import net.openhft.koloboke.collect.map.hash.HashObjIntMaps;
-import net.openhft.koloboke.collect.map.hash.HashObjObjMaps;
-import net.openhft.koloboke.collect.set.ObjSet;
-import net.openhft.koloboke.collect.set.hash.HashObjSets;
-import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
-import org.apache.commons.math3.linear.RealMatrix;
+import com.koloboke.collect.ObjCursor;
+import com.koloboke.collect.map.ObjIntMap;
+import com.koloboke.collect.map.ObjObjMap;
+import com.koloboke.collect.map.hash.HashObjIntMaps;
+import com.koloboke.collect.map.hash.HashObjObjMaps;
+import com.koloboke.collect.set.ObjSet;
+import com.koloboke.collect.set.hash.HashObjSets;
+import com.koloboke.function.ObjDoubleToDoubleFunction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.api.serving.ServingModel;
-import com.cloudera.oryx.app.als.FeatureVectors;
+import com.cloudera.oryx.app.als.FeatureVectorsPartition;
+import com.cloudera.oryx.app.als.PartitionedFeatureVectors;
 import com.cloudera.oryx.app.als.RescorerProvider;
+import com.cloudera.oryx.app.als.SolverCache;
 import com.cloudera.oryx.app.serving.als.CosineDistanceSensitiveFunction;
 import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.collection.Pairs;
 import com.cloudera.oryx.common.lang.AutoLock;
 import com.cloudera.oryx.common.lang.AutoReadWriteLock;
-import com.cloudera.oryx.common.lang.LoggingCallable;
-import com.cloudera.oryx.common.math.LinearSystemSolver;
 import com.cloudera.oryx.common.math.Solver;
 
 /**
@@ -57,20 +56,17 @@ import com.cloudera.oryx.common.math.Solver;
  */
 public final class ALSServingModel implements ServingModel {
 
-  /** Number of partitions for items data structures. */
+  private static final Logger log = LoggerFactory.getLogger(ALSServingModel.class);
+
   private static final ExecutorService executor = Executors.newFixedThreadPool(
       Runtime.getRuntime().availableProcessors(),
       new ThreadFactoryBuilder().setDaemon(true).setNameFormat("ALSServingModel-%d").build());
 
   private final LocalitySensitiveHash lsh;
   /** User-feature matrix. */
-  private final FeatureVectors X;
+  private final FeatureVectorsPartition X;
   /** Item-feature matrix. This is partitioned into several maps for parallel access. */
-  private final FeatureVectors[] Y;
-  /** Maps item IDs to their existing partition, if any */
-  private final ObjIntMap<String> yPartitionMap;
-  /** Controls access to yPartitionMap. */
-  private final AutoReadWriteLock yPartitionMapLock;
+  private final PartitionedFeatureVectors Y;
   /** Remembers items that each user has interacted with*/
   private final ObjObjMap<String,ObjSet<String>> knownItems; // Right now no corresponding "knownUsers" object
   private final AutoReadWriteLock knownItemsLock;
@@ -78,7 +74,7 @@ public final class ALSServingModel implements ServingModel {
   private final AutoReadWriteLock expectedUserIDsLock;
   private final ObjSet<String> expectedItemIDs;
   private final AutoReadWriteLock expectedItemIDsLock;
-  private final AtomicReference<Solver> cachedYTYSolver;
+  private final SolverCache cachedYTYSolver;
   /** Number of features used in the model. */
   private final int features;
   /** Whether model uses implicit feedback. */
@@ -100,13 +96,11 @@ public final class ALSServingModel implements ServingModel {
 
     lsh = new LocalitySensitiveHash(sampleRate, features);
 
-    X = new FeatureVectors();
-    Y = new FeatureVectors[lsh.getNumPartitions()];
-    for (int i = 0; i < Y.length; i++) {
-      Y[i] = new FeatureVectors();
-    }
-    yPartitionMap = HashObjIntMaps.newMutableMap();
-    yPartitionMapLock = new AutoReadWriteLock();
+    X = new FeatureVectorsPartition();
+    Y = new PartitionedFeatureVectors(
+        lsh.getNumPartitions(),
+        executor,
+        (String id, float[] vector) -> lsh.getIndexFor(vector));
 
     knownItems = HashObjObjMaps.newMutableMap();
     knownItemsLock = new AutoReadWriteLock();
@@ -116,7 +110,7 @@ public final class ALSServingModel implements ServingModel {
     expectedItemIDs = HashObjSets.newMutableSet();
     expectedItemIDsLock = new AutoReadWriteLock();
 
-    cachedYTYSolver = new AtomicReference<>();
+    cachedYTYSolver = new SolverCache(executor, Y);
 
     this.features = features;
     this.implicit = implicit;
@@ -140,14 +134,7 @@ public final class ALSServingModel implements ServingModel {
   }
 
   public float[] getItemVector(String item) {
-    int partition;
-    try (AutoLock al = yPartitionMapLock.autoReadLock()) {
-      partition = yPartitionMap.getOrDefault(item, Integer.MIN_VALUE);
-    }
-    if (partition < 0) {
-      return null;
-    }
-    return Y[partition].getVector(item);
+    return Y.getVector(item);
   }
 
   void setUserVector(String user, float[] vector) {
@@ -160,26 +147,13 @@ public final class ALSServingModel implements ServingModel {
 
   void setItemVector(String item, float[] vector) {
     Preconditions.checkArgument(vector.length == features);
-    int newPartition = lsh.getIndexFor(vector);
-    // Exclusive update to mapping -- careful since other locks are acquired inside here
-    try (AutoLock al = yPartitionMapLock.autoWriteLock()) {
-      int existingPartition = yPartitionMap.getOrDefault(item, Integer.MIN_VALUE);
-      if (existingPartition >= 0 && existingPartition != newPartition) {
-        // Move from one to the other partition, so first remove old entry
-        Y[existingPartition].removeVector(item);
-        // Note that it's conceivable that a recommendation call sees *no* copy of this
-        // item here in this brief window
-      }
-      // Then regardless put in new partition
-      Y[newPartition].setVector(item, vector);
-      yPartitionMap.put(item, newPartition);
-    }
+    Y.setVector(item, vector);
     try (AutoLock al = expectedItemIDsLock.autoWriteLock()) {
       expectedItemIDs.remove(item);
     }
     // Not clear if it's too inefficient to clear and recompute YtY solver every time any bit
     // of Y changes, but it's the most correct
-    cachedYTYSolver.set(null);
+    cachedYTYSolver.setDirty();
   }
 
   /**
@@ -239,21 +213,23 @@ public final class ALSServingModel implements ServingModel {
   }
 
   void addKnownItems(String user, Collection<String> items) {
-    ObjSet<String> knownItemsForUser = doGetKnownItems(user);
+    if (!items.isEmpty()) {
+      ObjSet<String> knownItemsForUser = doGetKnownItems(user);
 
-    if (knownItemsForUser == null) {
-      try (AutoLock al = knownItemsLock.autoWriteLock()) {
-        // Check again
-        knownItemsForUser = knownItems.get(user);
-        if (knownItemsForUser == null) {
-          knownItemsForUser = HashObjSets.newMutableSet();
-          knownItems.put(user, knownItemsForUser);
+      if (knownItemsForUser == null) {
+        try (AutoLock al = knownItemsLock.autoWriteLock()) {
+          // Check again
+          knownItemsForUser = knownItems.get(user);
+          if (knownItemsForUser == null) {
+            knownItemsForUser = HashObjSets.newMutableSet();
+            knownItems.put(user, knownItemsForUser);
+          }
         }
       }
-    }
 
-    synchronized (knownItemsForUser) {
-      knownItemsForUser.addAll(items);
+      synchronized (knownItemsForUser) {
+        knownItemsForUser.addAll(items);
+      }
     }
   }
 
@@ -291,46 +267,15 @@ public final class ALSServingModel implements ServingModel {
       ObjDoubleToDoubleFunction<String> rescoreFn,
       int howMany,
       Predicate<String> allowedPredicate) {
-
     int[] candidateIndices = lsh.getCandidateIndices(scoreFn.getTargetVector());
-    List<Callable<Stream<Pair<String,Double>>>> tasks = new ArrayList<>(candidateIndices.length);
-    for (int partition : candidateIndices) {
-      if (Y[partition].size() > 0) {
-        tasks.add(LoggingCallable.log(() -> {
+    Stream<Pair<String,Double>> stream = Y.mapPartitionsParallel(
+        partition -> {
           TopNConsumer consumer = new TopNConsumer(howMany, scoreFn, rescoreFn, allowedPredicate);
-          Y[partition].forEach(consumer);
+          partition.forEach(consumer);
           return consumer.getTopN();
-        }));
-      }
-    }
-
-    int numTasks = tasks.size();
-    if (numTasks == 0) {
-      return Stream.empty();
-    }
-
-    Stream<Pair<String,Double>> stream;
-    if (numTasks == 1) {
-      try {
-        stream = tasks.get(0).call();
-      } catch (Exception e) {
-        throw new IllegalStateException(e);
-      }
-    } else {
-      try {
-        stream = executor.invokeAll(tasks).stream().map(future -> {
-          try {
-            return future.get();
-          } catch (InterruptedException e) {
-            throw new IllegalStateException(e);
-          } catch (ExecutionException e) {
-            throw new IllegalStateException(e.getCause());
-          }
-        }).reduce(Stream::concat).get();
-      } catch (InterruptedException e) {
-        throw new IllegalStateException(e);
-      }
-    }
+        },
+        candidateIndices,
+        false);
     return stream.sorted(Pairs.orderBySecond(Pairs.SortOrder.DESCENDING)).limit(howMany);
   }
 
@@ -348,28 +293,19 @@ public final class ALSServingModel implements ServingModel {
    */
   public Collection<String> getAllItemIDs() {
     Collection<String> allItemIDs = HashObjSets.newMutableSet();
-    for (FeatureVectors yPartition : Y) {
-      yPartition.addAllIDsTo(allItemIDs);
-    }
+    Y.addAllIDsTo(allItemIDs);
     return allItemIDs;
   }
 
+  /**
+   * @return a {@link Solver} for use in solving systems involving YT*Y
+   */
   public Solver getYTYSolver() {
-    Solver cached = cachedYTYSolver.get();
-    if (cached != null) {
-      return cached;
-    }
-    RealMatrix YTY = null;
-    for (FeatureVectors yPartition : Y) {
-      RealMatrix YTYpartial = yPartition.getVTV();
-      if (YTYpartial != null) {
-        YTY = YTY == null ? YTYpartial : YTY.add(YTYpartial);
-      }
-    }
-    // Possible to compute this twice, but not a big deal
-    Solver newYTYSolver = LinearSystemSolver.getSolver(YTY);
-    cachedYTYSolver.set(newYTYSolver);
-    return newYTYSolver;
+    return cachedYTYSolver.get(true);
+  }
+
+  void precomputeSolvers() {
+    cachedYTYSolver.compute();
   }
 
   /**
@@ -396,15 +332,11 @@ public final class ALSServingModel implements ServingModel {
    * @param items items that should be retained, which are coming in the new model updates
    */
   void retainRecentAndItemIDs(Collection<String> items) {
-    for (FeatureVectors yPartition : Y) {
-      yPartition.retainRecentAndIDs(items);
-    }
+    Y.retainRecentAndIDs(items);
     try (AutoLock al = expectedItemIDsLock.autoWriteLock()) {
       expectedItemIDs.clear();
       expectedItemIDs.addAll(items);
-      for (FeatureVectors yPartition : Y) {
-        yPartition.removeAllIDsFrom(expectedItemIDs);
-      }
+      Y.removeAllIDsFrom(expectedItemIDs);
     }
   }
 
@@ -426,15 +358,25 @@ public final class ALSServingModel implements ServingModel {
     // This will be easier to quickly copy the whole (smallish) set rather than
     // deal with locks below
     Collection<String> allRecentKnownItems = HashObjSets.newMutableSet();
-    for (FeatureVectors yPartition : Y) {
-      yPartition.addAllRecentTo(allRecentKnownItems);
-    }
+    Y.addAllRecentTo(allRecentKnownItems);
 
     Predicate<String> notKeptOrRecent = value -> !items.contains(value) && !allRecentKnownItems.contains(value);
     try (AutoLock al = knownItemsLock.autoReadLock()) {
       knownItems.values().forEach(knownItemsForUser -> {
         synchronized (knownItemsForUser) {
-          knownItemsForUser.removeIf(notKeptOrRecent);
+          // knownItemsForUser.removeIf(notKeptOrRecent);
+          // TODO remove this temporary hack workaround and restore above
+          // see https://github.com/OryxProject/oryx/issues/304
+          ObjCursor<?> cursor = knownItemsForUser.cursor();
+          while (cursor.moveNext()) {
+            Object o = cursor.elem();
+            if (!(o instanceof String)) {
+              log.warn("Found non-String collection: {}", o);
+              cursor.remove();
+            } else if (notKeptOrRecent.test((String) o)) {
+              cursor.remove();
+            }
+          }
         }
       });
     }
@@ -451,11 +393,7 @@ public final class ALSServingModel implements ServingModel {
    * @return number of items in the model
    */
   public int getNumItems() {
-    int total = 0;
-    for (FeatureVectors yPartition : Y) {
-      total += yPartition.size();
-    }
-    return total;
+    return Y.size();
   }
 
   @Override
@@ -476,21 +414,9 @@ public final class ALSServingModel implements ServingModel {
 
   @Override
   public String toString() {
-    int maxSize = 16;
-    List<String> partitionSizes = new ArrayList<>(maxSize);
-    for (int i = 0; i < Y.length; i++) {
-      int size = Y[i].size();
-      if (size > 0) {
-        partitionSizes.add(i + ":" + size);
-        if (partitionSizes.size() == maxSize) {
-          partitionSizes.add("...");
-          break;
-        }
-      }
-    }
     return "ALSServingModel[features:" + features + ", implicit:" + implicit +
         ", X:(" + getNumUsers() + " users), Y:(" + getNumItems() + " items, partitions: " +
-        partitionSizes + "...), fractionLoaded:" + getFractionLoaded() + "]";
+        Y + "...), fractionLoaded:" + getFractionLoaded() + "]";
   }
 
 }

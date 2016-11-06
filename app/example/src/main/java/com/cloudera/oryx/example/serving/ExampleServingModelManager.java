@@ -16,16 +16,13 @@
 package com.cloudera.oryx.example.serving;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.typesafe.config.Config;
 import org.apache.hadoop.conf.Configuration;
 
-import com.cloudera.oryx.api.KeyMessage;
 import com.cloudera.oryx.api.serving.AbstractServingModelManager;
 import com.cloudera.oryx.api.serving.ServingModel;
 
@@ -37,32 +34,31 @@ import com.cloudera.oryx.api.serving.ServingModel;
  */
 public final class ExampleServingModelManager extends AbstractServingModelManager<String> {
 
-  private final Map<String,Integer> distinctOtherWords = Collections.synchronizedMap(new HashMap<>());
+  private final Map<String,Integer> distinctOtherWords = new HashMap<>();
 
   public ExampleServingModelManager(Config config) {
     super(config);
   }
 
   @Override
-  public void consume(Iterator<KeyMessage<String,String>> updateIterator, Configuration hadoopConf) throws IOException {
-    while (updateIterator.hasNext()) {
-      KeyMessage<String,String> km = updateIterator.next();
-      String key = km.getKey();
-      String message = km.getMessage();
-      switch (key) {
-        case "MODEL":
-          @SuppressWarnings("unchecked")
-          Map<String,Integer> model = (Map<String,Integer>) new ObjectMapper().readValue(message, Map.class);
-          distinctOtherWords.keySet().retainAll(model.keySet());
+  public void consumeKeyMessage(String key, String message, Configuration hadoopConf) throws IOException {
+    switch (key) {
+      case "MODEL":
+        @SuppressWarnings("unchecked")
+        Map<String,Integer> model = (Map<String,Integer>) new ObjectMapper().readValue(message, Map.class);
+        synchronized (distinctOtherWords) {
+          distinctOtherWords.clear();
           model.forEach(distinctOtherWords::put);
-          break;
-        case "UP":
-          String[] wordCount = message.split(",");
+        }
+        break;
+      case "UP":
+        String[] wordCount = message.split(",");
+        synchronized (distinctOtherWords) {
           distinctOtherWords.put(wordCount[0], Integer.valueOf(wordCount[1]));
-          break;
-        default:
-          throw new IllegalArgumentException("Unknown key " + key);
-      }
+        }
+        break;
+      default:
+        throw new IllegalArgumentException("Bad key " + key);
     }
   }
 

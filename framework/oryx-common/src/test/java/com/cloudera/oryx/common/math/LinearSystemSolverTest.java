@@ -15,8 +15,6 @@
 
 package com.cloudera.oryx.common.math;
 
-import org.apache.commons.math3.linear.Array2DRowRealMatrix;
-import org.apache.commons.math3.linear.RealMatrix;
 import org.junit.Test;
 
 import com.cloudera.oryx.common.OryxTest;
@@ -25,16 +23,17 @@ public final class LinearSystemSolverTest extends OryxTest {
 
   @Test
   public void testNull() {
-    assertNull(LinearSystemSolver.getSolver(null));
+    assertNull(LinearSystemSolver.getSolver((double[]) null));
+    assertNull(LinearSystemSolver.getSolver((double[][]) null));
   }
 
   @Test
   public void testSolveFToF() {
-    RealMatrix a = new Array2DRowRealMatrix(new double[][] {
+    double[][] a = {
         {1.3, -2.0, 3.0},
         {2.0, 0.0, 5.0},
         {0.0, -1.5, 5.5},
-    });
+    };
     Solver solver = LinearSystemSolver.getSolver(a);
     assertNotNull(solver);
     float[] y = solver.solveFToF(new float[] {1.0f, 2.0f, 6.5f});
@@ -42,53 +41,51 @@ public final class LinearSystemSolverTest extends OryxTest {
   }
 
   @Test
-  public void testIsNonSingular() {
-    RealMatrix nonSingular = new Array2DRowRealMatrix(new double[][] {
+  public void testSolveDToD() {
+    double[][] a = {
         {1.3, -2.0, 3.0},
         {2.0, 0.0, 5.0},
         {0.0, -1.5, 5.5},
-    });
-    assertTrue(LinearSystemSolver.isNonSingular(nonSingular));
-    RealMatrix singular = new Array2DRowRealMatrix(new double[][] {
-        {1.3, -2.0, 3.0},
-        {2.6, -4.0, 6.0},
-        {0.0, -1.5, 5.5},
-    });
-    assertFalse(LinearSystemSolver.isNonSingular(singular));
+    };
+    Solver solver = LinearSystemSolver.getSolver(a);
+    assertNotNull(solver);
+    double[] y = solver.solveDToD(new double[] {1.0, 2.0, 6.5});
+    assertArrayEquals(
+        new double[] {-1.9560439560439564, 0.002197802197802894, 1.1824175824175824}, y);
+  }
+
+  @Test
+  public void testSolveDToDPacked() {
+    double[] a = {1.3, -2.0, 2.0, 3.0, 5.0, 1.5};
+    Solver solver = LinearSystemSolver.getSolver(a);
+    assertNotNull(solver);
+    double[] y = solver.solveDToD(new double[] {1.0, 2.0, 6.5});
+    assertArrayEquals(
+        new double[] {1.163614884819846, 0.701122268163024, 0.444772593030124}, y);
   }
 
   @Test
   public void testApparentRank() {
     try {
-      LinearSystemSolver.getSolver(new Array2DRowRealMatrix(new double[][] {
+      LinearSystemSolver.getSolver(new double[][] {
           {1.3001, -2.0, 3.0},
           {2.6, -4.0001, 6.0001},
           {0.0, -1.5, 5.5},
-      }));
+      });
       fail("Expected singular matrix");
     } catch (SingularMatrixSolverException smse) {
       assertEquals(2, smse.getApparentRank());
     }
     try {
-      LinearSystemSolver.getSolver(new Array2DRowRealMatrix(new double[][] {
+      LinearSystemSolver.getSolver(new double[][] {
           {1.3001, -2.0, 3.0},
           {2.6, -4.0001, 6.0001},
           {1.3, -2.0002, 3.0002},
-      }));
+      });
       fail("Expected singular matrix");
     } catch (SingularMatrixSolverException smse) {
       assertEquals(1, smse.getApparentRank());
     }
-  }
-
-  @Test
-  public void testSmallValues() {
-    RealMatrix nonSingular = new Array2DRowRealMatrix(new double[][] {
-        {1.3e-20, -2.0e-20, 3.0e-20},
-        {2.0e-20, 0.0, 5.0e-20},
-        {0.0, -1.5e-20, 5.5e-20},
-    });
-    assertTrue(LinearSystemSolver.isNonSingular(nonSingular));
   }
 
 }

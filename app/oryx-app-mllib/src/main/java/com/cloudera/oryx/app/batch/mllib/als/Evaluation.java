@@ -17,6 +17,7 @@ package com.cloudera.oryx.app.batch.mllib.als;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 
 import com.google.common.collect.Sets;
@@ -40,8 +41,7 @@ import com.cloudera.oryx.common.random.RandomManager;
  */
 final class Evaluation {
 
-  private Evaluation() {
-  }
+  private Evaluation() {}
 
   /**
    * Computes root mean squared error of {@link Rating#rating()} versus predicted value.
@@ -91,7 +91,7 @@ final class Evaluation {
         new PairFlatMapFunction<Tuple2<Integer,Iterable<Integer>>,Integer,Integer>() {
           private final RandomGenerator random = RandomManager.getRandom();
           @Override
-          public Iterable<Tuple2<Integer,Integer>> call(
+          public Iterator<Tuple2<Integer,Integer>> call(
               Tuple2<Integer,Iterable<Integer>> userIDsAndItemIDs) {
             Integer userID = userIDsAndItemIDs._1();
             Collection<Integer> positiveItemIDs = Sets.newHashSet(userIDsAndItemIDs._2());
@@ -106,7 +106,7 @@ final class Evaluation {
                 negative.add(new Tuple2<>(userID, itemID));
               }
             }
-            return negative;
+            return negative.iterator();
           }
         });
 

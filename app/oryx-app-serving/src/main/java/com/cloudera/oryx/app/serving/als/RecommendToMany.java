@@ -31,7 +31,7 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.PathSegment;
 
-import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
+import com.koloboke.function.ObjDoubleToDoubleFunction;
 
 import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
@@ -67,8 +67,7 @@ public final class RecommendToMany extends AbstractALSResource {
       @QueryParam("rescorerParams") List<String> rescorerParams) throws OryxServingException {
 
     check(!pathSegmentsList.isEmpty(), "Need at least 1 user");
-    check(howMany > 0, "howMany must be positive");
-    check(offset >= 0, "offset must be non-negative");
+    int howManyOffset = checkHowManyOffset(howMany, offset);
 
     ALSServingModel alsServingModel = getALSServingModel();
     float[][] userFeaturesVectors = new float[pathSegmentsList.size()][];
@@ -105,7 +104,7 @@ public final class RecommendToMany extends AbstractALSResource {
     Stream<Pair<String,Double>> topIDDots = alsServingModel.topN(
         new DotsFunction(userFeaturesVectors),
         rescoreFn,
-        howMany + offset,
+        howManyOffset,
         allowedFn);
 
     return toIDValueResponse(topIDDots, howMany, offset);
